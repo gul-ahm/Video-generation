@@ -76,7 +76,8 @@ def voice_model(pip):
     pins (its PyTorch path needs no MLX and works with today's transformers) and Kaggle's torch stays. If that torch is
     too new for it, the set the Mac runs (torch 2.8, torchaudio 2.8, torchvision 0.23) goes in as a matched trio.
     The import is tried here, so a broken voice stops the run in minutes, before any planning."""
-    sh(pip + ["--no-deps", "chatterbox-mlx==1.3.1", "s3tokenizer==0.3.0", "resemble-perth==1.0.1", "conformer==0.3.2"])
+    # the package says Python below 3.13 because of MLX; its PyTorch code is plain Python and Kaggle runs 3.13
+    sh(pip + ["--no-deps", "--ignore-requires-python", "chatterbox-mlx==1.3.1", "s3tokenizer==0.3.0", "resemble-perth==1.0.1", "conformer==0.3.2"])
     sh(pip + ["onnx", "einops", "pyloudnorm", "librosa==0.11.0", "psutil", "tqdm", "transformers>=5.10",
               "diffusers==0.35.2"])
     probe = [sys.executable, "-c", "import torch, torchaudio, torchvision; from chatterbox.tts import ChatterboxTTS; "
