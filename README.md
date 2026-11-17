@@ -205,7 +205,22 @@ The most useful settings in `.env`:
 
 Between stages the video folder travels through Drive as `job_<id>.tgz`. The code, the assets (voice, music, sound
 effects, fonts) and the secrets are three private Kaggle datasets that `python cloud.py sync` uploads from the Mac.
-`python cloud.py start "Title" 22` starts a video. A failure in any stage is sent to Telegram.
+`python cloud.py start "Title" 22` starts a video, `python cloud.py day 5` starts day 5 of `plan.json`. A failure in
+any stage is sent to Telegram.
+
+A small Cloudflare worker (`cloud/cloudflare/worker.js`, put up with `python cloud.py worker`) is the part that is
+always on:
+
+- **Daily start.** Once a day it pushes the research kernel for the next day of the plan, straight to Kaggle's API.
+  It starts paused; `/resume` in Telegram turns it on.
+- **Yes and No.** Yes approves the video and gives it the next free publish slot (11 AM New York by default). No asks
+  what is wrong and keeps the reason and the screenshots you send for the fix step.
+- **Upload settings.** `/settings` asks each setting once with its options (category, audience, license, comments and
+  so on). The studio only writes the title, description, hashtags and captions. Paid promotion and AI use are always
+  "No".
+- **Commands.** `/status`, `/next`, `/day N`, `/pause`, `/resume`.
+
+The kernels report each stage, failure and finished video to the worker. Its state sits in Cloudflare KV.
 
 ## What is in the folder
 
@@ -223,6 +238,7 @@ effects, fonts) and the secrets are three private Kaggle datasets that `python c
 | `qa.py` | the quality check |
 | `meta.py` | the YouTube pack |
 | `documentary/` | research, claims ledger, article screenshots and the documentary script |
+| `cloud.py`, `cloud/` | the Kaggle stages, Drive and Telegram, and the Cloudflare worker |
 | `samples/` | the script format and example scripts |
 
 Not in the repository on purpose: my voice samples, the music and sound effect files, the reference videos, the
@@ -238,5 +254,5 @@ Real ESRGAN binary, and everything in `output/`. Bring your own voice, music and
 - **Real people in the news.** The script keeps allegations as allegations, but such videos still need a human read
   before upload. Mark AI pictures as altered or synthetic content when you upload.
 
-Next on the list: running the whole build on Kaggle so the laptop can stay off, a Telegram approval step before
-anything is published, and scheduled publishing on New York time.
+Next on the list: fixing a rejected video from the reason and screenshots sent on Telegram, and the YouTube upload
+with its publish slot.

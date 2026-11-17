@@ -7,6 +7,7 @@
   python cloud.py day 1                        start day 1 of the plan in plan.json (title, length and its event)
   python cloud.py day 1 gpu                    the same, from a later stage (its folder is already on Drive)
   python cloud.py send output/<folder>         put a folder made on the Mac on Drive, so a later stage can continue it
+  python cloud.py worker                       put the Cloudflare worker up (daily start, Telegram Yes and No)
 
 Run sync again after changing the code, the voice, the music or a key.
 """
@@ -59,6 +60,9 @@ def sync():
                                                 (ROOT / ".env.example", "secrets/env.txt")])
         for name in ("code", "assets", "secrets"):
             dataset(name, f"{d}/{name}.tgz")
+    if (ROOT / "secrets" / "worker.env").exists():  # the daily start pushes the same kernel.py and plan
+        import worker
+        worker.kv_files()
 
 
 def send(folder):
@@ -80,7 +84,10 @@ if __name__ == "__main__":
         send(args[1])
     elif args[:1] == ["day"] and len(args) in (2, 3):
         d = next(x for x in json.loads((ROOT / "plan.json").read_text())["days"] if x["day"] == int(args[1]))
-        push.push(args[2] if len(args) == 3 else "research", push.job(d["title"], d.get("minutes", 22), subject=d["subject"]))
+        push.push(args[2] if len(args) == 3 else "research", push.job(d["title"], d.get("minutes", 22), subject=d["subject"], day=d["day"]))
+    elif args[:1] == ["worker"]:
+        import worker
+        worker.deploy()
     elif args[:1] == ["start"] and len(args) >= 2:
         push.push(args[3] if len(args) > 3 else "research", push.job(args[1], int(args[2]) if len(args) > 2 else 22))
     else:

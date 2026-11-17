@@ -144,8 +144,24 @@ def deliver():
     check = json.loads(check.read_text()) if check.exists() else {}
     warn = ("" if check.get("ok", True) else
             f"\n\nTitle check: {'; '.join(check.get('problems', []))[:600]}\nSuggested title: {check.get('title')}")
+    hook("ready", link=link)
     drive.tell(f"Video ready: {best}\n\nWatch: {link}{warn}\n\nCheck the screenshots and facts, then approve.",
                [("Yes, publish", f"yes:{RUN['id']}"), ("No", f"no:{RUN['id']}")])
+
+
+def hook(event, **extra):
+    """Tell the Cloudflare worker (Telegram buttons, daily start) how the video is doing; quiet when it is not set up."""
+    sys.path.insert(0, str(HOME / "cloud"))
+    import drive
+    import requests
+    w = drive.env("worker")
+    if not w.get("WORKER_URL"):
+        return
+    body = {"event": event, "id": RUN["id"], "title": RUN["title"], "day": RUN.get("day"), "stage": RUN["stage"], **extra}
+    try:
+        requests.post(f"{w['WORKER_URL']}/hook", json=body, headers={"X-Studio-Secret": w["HOOK_SECRET"]}, timeout=30)
+    except requests.RequestException:
+        pass
 
 
 def push(stage):
@@ -158,6 +174,7 @@ def main():
     stage, t0 = RUN["stage"], time.time()
     try:
         unpack()
+        hook("stage")
         install(stage)
         if stage != "research":
             state("get")
@@ -173,6 +190,7 @@ def main():
         try:
             import drive
             drive.tell(f"History Studio: the {stage} stage of \"{RUN['title']}\" failed: {str(err)[:300]}")
+            hook("failed", error=str(err)[:300])
         finally:
             raise
 

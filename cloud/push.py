@@ -43,6 +43,7 @@ def push(stage, job):
         raise SystemExit(f"kaggle push of {slug} failed")
 
 
-def job(title, minutes=22, style="documentary", subject=""):
+def job(title, minutes=22, style="documentary", subject="", day=None):
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60]
-    return {"id": slug[:40], "title": title, "minutes": minutes, "style": style, "slug": slug, "subject": subject}
+    return {"id": slug[:40], "title": title, "minutes": minutes, "style": style, "slug": slug, "subject": subject,
+            "day": day}
