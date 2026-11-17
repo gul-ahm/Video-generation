@@ -181,9 +181,12 @@ def main():
         work(stage)
         if stage == "render":
             deliver()
+            import drive
+            drive.delete(f"job_{RUN['id']}.tgz")
         else:
             state("put")
             push(NEXT[stage])
+        hook("done", minutes=round((time.time() - t0) / 60))
         print(f"{stage} done in {(time.time() - t0) / 60:.0f} min", flush=True)
     except BaseException as err:
         sys.path.insert(0, str(HOME / "cloud"))

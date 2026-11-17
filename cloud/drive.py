@@ -79,6 +79,14 @@ def download(name, dst):
     return True
 
 
+def delete(name):
+    """Remove <name> from the Drive folder (the job folder once the video is made; Drive's free 15 GB fills fast)."""
+    fid = find(name)
+    if fid:
+        requests.delete(f"{API}/{fid}", params={"supportsAllDrives": "true"},
+                        headers={"Authorization": f"Bearer {token('drive')}"}, timeout=60)
+
+
 def tell(text, buttons=None):
     """A Telegram message to you; buttons: [(label, callback data)] in one row."""
     t = env("telegram")

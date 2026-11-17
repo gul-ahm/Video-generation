@@ -211,14 +211,17 @@ any stage is sent to Telegram.
 A small Cloudflare worker (`cloud/cloudflare/worker.js`, put up with `python cloud.py worker`) is the part that is
 always on:
 
-- **Daily start.** Once a day it pushes the research kernel for the next day of the plan, straight to Kaggle's API.
-  It starts paused; `/resume` in Telegram turns it on.
+- **Starts videos by itself.** Every half hour it checks: when nothing is running and today's count (4 by default,
+  the day begins at 6:00 India time) is not reached, it pushes the research kernel for the next day of the plan
+  straight to Kaggle's API. One video at a time; none when the week's 30 Kaggle GPU hours are nearly used. A day that
+  fails twice is skipped and reported. It is turned on once with `/resume` and then runs until the plan is done.
+- **Drive stays small.** The job folder is removed from Drive once the video is made.
 - **Yes and No.** Yes approves the video and gives it the next free publish slot (11 AM New York by default). No asks
   what is wrong and keeps the reason and the screenshots you send for the fix step.
 - **Upload settings.** `/settings` asks each setting once with its options (category, audience, license, comments and
   so on). The studio only writes the title, description, hashtags and captions. Paid promotion and AI use are always
   "No".
-- **Commands.** `/status`, `/next`, `/day N`, `/pause`, `/resume`.
+- **Commands.** `/status`, `/next`, `/day N`, `/pause`, `/resume`, `/perday N`, `/starthour H`.
 
 The kernels report each stage, failure and finished video to the worker. Its state sits in Cloudflare KV.
 

@@ -3,7 +3,7 @@
     python cloud.py worker
 
 Uses secrets/cloudflare.env, secrets/telegram.env and ~/.kaggle/kaggle.json. Makes the KV store, uploads
-cloud/cloudflare/worker.js with the keys as secrets, turns on its workers.dev address and the daily timer, puts
+cloud/cloudflare/worker.js with the keys as secrets, turns on its workers.dev address and its half hourly timer, puts
 cloud/kernel.py and plan.json in KV, sets the Telegram webhook and writes secrets/worker.env (the address and the
 shared secret the Kaggle kernels use to report back). Safe to run again: the KV store, the state and the secret stay.
 """
@@ -18,7 +18,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 SECRETS = ROOT / "secrets"
 NAME = "history-studio"
-DAILY = "41 0 * * *"  # 00:41 UTC, 6:11 in India: the video is ready by the afternoon, before 11 AM in New York
+TICK = "*/30 * * * *"  # every half hour the worker starts the next video when nothing runs and the day has room
 
 
 def env(name):
@@ -85,9 +85,9 @@ def deploy():
         "metadata": (None, json.dumps(meta), "application/json"),
         "worker.js": ("worker.js", code, "application/javascript+module")})
     print("  worker: uploaded", flush=True)
-    cf.call("PUT", f"/workers/scripts/{NAME}/schedules", json=[{"cron": DAILY}])
+    cf.call("PUT", f"/workers/scripts/{NAME}/schedules", json=[{"cron": TICK}])
     url = cf.address()
-    print(f"  worker: {url}, daily start {DAILY} UTC", flush=True)
+    print(f"  worker: {url}, checks {TICK} (UTC)", flush=True)
 
     kv_files(cf, space)
     if cf.get(space, "state") is None:  # the first time: nothing starts by itself until you send /resume

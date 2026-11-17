@@ -1,11 +1,14 @@
-// History Studio on Cloudflare: the daily start, and the Telegram side of every video.
+// History Studio on Cloudflare: the videos start by themselves, and the Telegram side of every video.
 //
-//   every day     starts the next day of plan.json on Kaggle (research, then gpu, then render chain themselves)
+//   every 30 min  if nothing is running and today's count (default 4) is not reached, the next day of plan.json
+//                 starts on Kaggle (research, then gpu, then render chain themselves). The count resets every day at
+//                 the start hour (6:00 India). One video at a time, and none when the week's GPU hours run out.
+//                 A day that fails twice is skipped and reported, so one bad topic never stops the rest.
 //   Yes           the video is approved and gets the next free publish slot, 11 AM New York time by default
 //   No            asks what is wrong and keeps the reason and the screenshots for the fix step
 //   /settings     the upload settings, asked once with their options; title, description, hashtags and captions
 //                 are made by the studio, paid promotion and AI use are always "No"
-//   /status /next /day N /pause /resume /help
+//   /status /next /day N /pause /resume /perday N /starthour H /help
 //
 // State lives in KV: "state", "plan", "kernel" (cloud/kernel.py), "settings", "job:<id>", "await".
 // The Kaggle kernels report back on /hook with the shared secret.
@@ -29,7 +32,8 @@ const HELP = `History Studio
 /status  what is running, the last videos
 /next  start the next day of the plan now
 /day N  start day N now
-/pause  stop the daily start, /resume  start it again (/resume 2 goes on from day 2)
+/pause  stop the automatic start, /resume  start it again (/resume 2 goes on from day 2)
+/perday N  videos a day (now 4), /starthour H  when the day's videos begin, India time (now 6)
 /settings  choose the upload settings (/settings reset to choose again)`;
 
 export default {
@@ -51,7 +55,7 @@ export default {
   },
 
   async scheduled(_, env, ctx) {
-    ctx.waitUntil(daily(env));
+    ctx.waitUntil(tick(env));
   },
 };
 
@@ -59,7 +63,31 @@ export default {
 
 const get = async (env, key, fallback) => JSON.parse((await env.KV.get(key)) || "null") ?? fallback;
 const put = (env, key, value) => env.KV.put(key, JSON.stringify(value));
-const state = (env) => get(env, "state", { next_day: 1, paused: true, running: null, last_slot: null });
+const DEFAULT = { next_day: 1, paused: true, running: null, last_slot: null, per_day: 4, start_hour: 6, started: {},
+                  tries: {}, gpu: {}, gpu_start: {}, told: null };
+const state = async (env) => ({ ...DEFAULT, ...(await get(env, "state", {})) });
+
+const GPU_WEEK = 29;        // Kaggle gives 30 GPU hours a week; one is kept spare
+const STALE = 12 * 3600e3;  // a video still "running" after this never reported back: it counts as failed once
+
+// the studio's day: from the start hour in India to the same hour the next day
+function today(s) {
+  const ist = Date.now() + 5.5 * 3600e3 - s.start_hour * 3600e3;
+  return new Date(ist).toISOString().slice(0, 10);
+}
+
+// Kaggle's GPU week starts on Saturday 00:00 UTC
+function week() {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 1) % 7));
+  return d.toISOString().slice(0, 10);
+}
+
+function gpuAverage(s) {
+  const runs = Object.values(s.gpu_runs || {});
+  return runs.length ? runs.reduce((a, b) => a + b, 0) / runs.length : 2;
+}
 
 // ---------- starting a video ----------
 
@@ -67,29 +95,59 @@ function slugOf(title) {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 }
 
-async function start(env, day, who) {
+async function start(env, day) {
   const plan = await get(env, "plan", { days: [] });
   const d = plan.days.find((x) => x.day === day);
   if (!d) return `Day ${day} is not in the plan.`;
-  const s = await state(env);
-  const busy = s.running && Date.now() - s.running.since < 20 * 3600e3;
-  if (busy && who === "daily") return null;
   const slug = slugOf(d.title);
   const run = { id: slug.slice(0, 40), title: d.title, minutes: d.minutes || 22, style: "documentary", slug,
                 subject: d.subject || "", day, stage: "research" };
   await kagglePush(env, run);
+  const s = await state(env);
   s.running = { id: run.id, day, since: Date.now() };
+  s.started[today(s)] = (s.started[today(s)] || 0) + 1;
   await put(env, "state", s);
   await put(env, `job:${run.id}`, { id: run.id, day, title: d.title, status: "running", stage: "research",
                                     started: new Date().toISOString(), feedback: [] });
-  return `Day ${day} started on Kaggle: ${d.title}${busy ? "\n(another video was still running)" : ""}`;
+  return `Day ${day} started on Kaggle: ${d.title}`;
 }
 
-async function daily(env) {
+// a day that failed: tried once more, then skipped so the plan goes on
+function failedDay(s, day) {
+  s.tries[day] = (s.tries[day] || 0) + 1;
+  if (s.tries[day] < 2) return `It will be tried once more.`;
+  if (s.next_day === day) s.next_day = day + 1;
+  return `It failed twice, so it is skipped for now (start it again with /day ${day}).`;
+}
+
+async function tick(env) {
   const s = await state(env);
   if (s.paused) return;
-  const msg = await start(env, s.next_day, "daily").catch((err) => `The daily start failed: ${err}`);
-  if (msg) await say(env, msg);
+  if (s.running && Date.now() - s.running.since > STALE) {  // the kernels went quiet: Kaggle stopped them
+    const why = failedDay(s, s.running.day);
+    await say(env, `Day ${s.running.day} did not finish in 12 hours. ${why}`);
+    s.running = null;
+    await put(env, "state", s);
+  }
+  if (s.running || (s.started[today(s)] || 0) >= s.per_day) return;
+  const plan = await get(env, "plan", { days: [] });
+  if (!plan.days.some((x) => x.day >= s.next_day)) {
+    s.paused = true;
+    await put(env, "state", s);
+    return say(env, "Every day of the plan has been made. The automatic start is paused.");
+  }
+  const used = s.gpu[week()] || 0;
+  if (used + gpuAverage(s) > GPU_WEEK) {
+    if (s.told !== week()) {
+      s.told = week();
+      await put(env, "state", s);
+      await say(env, `This week's Kaggle GPU hours are used (${used.toFixed(1)} h). Videos start again on Saturday.`);
+    }
+    return;
+  }
+  const day = plan.days.map((x) => x.day).filter((x) => x >= s.next_day).sort((a, b) => a - b)[0];
+  const msg = await start(env, day).catch((err) => `Could not start day ${day}: ${err}`);
+  await say(env, msg);
 }
 
 async function kagglePush(env, run) {
@@ -117,18 +175,32 @@ async function kagglePush(env, run) {
 async function hook(e, env) {
   const job = await get(env, `job:${e.id}`, { id: e.id, title: e.title, day: e.day, feedback: [] });
   const s = await state(env);
-  if (e.event === "stage") Object.assign(job, { stage: e.stage, status: "running" });
+  const mine = s.running?.id === e.id;
+  if (e.event === "stage") {
+    Object.assign(job, { stage: e.stage, status: "running" });
+    if (e.stage === "gpu") s.gpu_start[e.id] = Date.now();
+  }
+  if (e.stage === "gpu" && (e.event === "done" || e.event === "failed") && s.gpu_start[e.id]) {
+    const hours = (Date.now() - s.gpu_start[e.id]) / 3600e3;
+    s.gpu[week()] = (s.gpu[week()] || 0) + hours;
+    if (e.event === "done") s.gpu_runs = { ...(s.gpu_runs || {}), [e.id]: hours };
+    delete s.gpu_start[e.id];
+  }
   if (e.event === "failed") {
     Object.assign(job, { status: "failed", stage: e.stage, error: e.error });
-    if (s.running?.id === e.id) s.running = null;
+    if (mine) s.running = null;
+    if (job.day) await say(env, `Day ${job.day}: ${failedDay(s, job.day)}`);
   }
   if (e.event === "ready") {
     Object.assign(job, { status: "ready", link: e.link, youtube: e.youtube || null, ready: new Date().toISOString() });
-    if (s.running?.id === e.id) s.running = null;
+    if (mine) s.running = null;
     if (job.day && job.day >= s.next_day) s.next_day = job.day + 1;
   }
+  for (const w of Object.keys(s.gpu)) if (w < week()) delete s.gpu[w];  // keep only this week
+  for (const d of Object.keys(s.started)) if (d < today(s)) delete s.started[d];
   await put(env, `job:${e.id}`, job);
   await put(env, "state", s);
+  if (e.event === "ready" && !s.paused) await tick(env);  // the next video starts right away, not at the next tick
   return { ok: true };
 }
 
@@ -261,12 +333,23 @@ async function command(text, env) {
     s.paused = cmd === "/pause";
     if (cmd === "/resume" && Number(arg)) s.next_day = Number(arg);
     await put(env, "state", s);
-    return say(env, s.paused ? "Daily start paused." : `Daily start on. Next: day ${s.next_day}.`);
+    if (s.paused) return say(env, "Automatic start paused. A video already running still finishes.");
+    await say(env, `Automatic start on: ${s.per_day} videos a day from ${s.start_hour}:00 India time, ` +
+      `one after another, from day ${s.next_day}. You only need to review them.`);
+    return tick(env);
+  }
+  if (cmd === "/perday" || cmd === "/starthour") {
+    const n = Number(arg);
+    if (!(n >= (cmd === "/perday" ? 1 : 0) && n <= (cmd === "/perday" ? 8 : 23))) return say(env, `Send it like: ${cmd} 4`);
+    s[cmd === "/perday" ? "per_day" : "start_hour"] = n;
+    await put(env, "state", s);
+    return say(env, `Now ${s.per_day} videos a day, starting ${s.start_hour}:00 India time.`);
   }
   if (cmd === "/next" || cmd === "/day") {
     const day = cmd === "/day" ? Number(arg) : s.next_day;
     if (!day) return say(env, "Send it like: /day 5");
-    return say(env, await start(env, day, "you").catch((err) => `Could not start day ${day}: ${err}`));
+    if (s.running) return say(env, `Day ${s.running.day} is still running; one video at a time.`);
+    return say(env, await start(env, day).catch((err) => `Could not start day ${day}: ${err}`));
   }
   if (cmd === "/settings") {
     if (arg === "reset") await put(env, "settings", {});
@@ -278,8 +361,11 @@ async function command(text, env) {
       .sort((a, b) => (b.started || b.ready || "").localeCompare(a.started || a.ready || "")).slice(0, 6);
     const lines = jobs.map((j) => `day ${j.day ?? "?"} ${j.status}${j.status === "running" ? ` (${j.stage})` : ""}: ` +
       `${j.title || j.id}${j.publish_at ? `, publish ${ny(j.publish_at)} NY` : ""}`);
-    return say(env, `Daily start: ${s.paused ? "paused" : "on"}, next day ${s.next_day}\n` +
-      `Running: ${s.running ? `day ${s.running.day}` : "nothing"}\n\n${lines.join("\n") || "No videos yet."}`);
+    return say(env, `Automatic start: ${s.paused ? "paused" : "on"}, ${s.per_day} a day from ${s.start_hour}:00, ` +
+      `next day ${s.next_day}\nToday: ${s.started[today(s)] || 0} started\n` +
+      `Running: ${s.running ? `day ${s.running.day}` : "nothing"}\n` +
+      `GPU this week: ${(s.gpu[week()] || 0).toFixed(1)} of ${GPU_WEEK} h, about ${gpuAverage(s).toFixed(1)} h a video` +
+      `\n\n${lines.join("\n") || "No videos yet."}`);
   }
   return say(env, HELP);
 }
