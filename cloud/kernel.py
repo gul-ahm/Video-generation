@@ -44,8 +44,10 @@ def unpack():
     kag.mkdir(exist_ok=True)
     shutil.copy(HOME / "secrets" / "kaggle.json", kag / "kaggle.json")
     (kag / "kaggle.json").chmod(0o600)
+    # IMAGE_ENGINE: a picture's file name comes from the engine, which follows the device; without it the CPU render
+    # looked for other names than the GPU stage had drawn and found none of the 114 pictures
     extra = {"CLOUD": "1", "KAGGLE_LOCAL": "1", "KAGGLE": "1", "MAC_PICTURES": "0", "CHATTER_BACKEND": "torch",
-             "ASK_CLEAN": "0", "PREWRITE": "0"}
+             "ASK_CLEAN": "0", "PREWRITE": "0", "IMAGE_ENGINE": "local"}
     lines = (HOME / "secrets" / "env.txt").read_text().splitlines()
     lines = [l for l in lines if l.split("=", 1)[0] not in extra] + [f"{k}={v}" for k, v in extra.items()]
     (HOME / ".env").write_text("\n".join(lines) + "\n")

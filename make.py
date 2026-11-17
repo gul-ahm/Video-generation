@@ -248,7 +248,9 @@ def on_kaggle(s, plans, folder):
         return 0
     todo, moves = [], []
     for i, (ch, plan) in enumerate(zip(s["chapters"], plans)):
-        clips = os.getenv("CLIPS", "1") == "1"  # without real footage a clip line is drawn like timeline() does
+        # without real footage a clip line is drawn like timeline() does; in the cloud the render machine has no GPU,
+        # so the picture is drawn here anyway and stays unused when footage is found
+        clips = os.getenv("CLIPS", "1") == "1" and os.getenv("CLOUD") != "1"
         prompts = [(None if clips else f"{p[5:].strip()}, showing: {shot[2][:150]}") if p and p.lower().startswith("clip:")
                    else p for p, shot in zip(lit(ch, plan), ch["shots"])]
         prompts = [None if p and p.lower().startswith("source:") else p for p in prompts]
