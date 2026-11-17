@@ -4,7 +4,9 @@
 //                 starts on Kaggle (research, then gpu, then render chain themselves). The count resets every day at
 //                 the start hour (6:00 India). One video at a time, and none when the week's GPU hours run out.
 //                 A day that fails twice is skipped and reported, so one bad topic never stops the rest.
-//   Yes           the video is approved and gets the next free publish slot, 11 AM New York time by default
+//   Yes           the video is approved and gets the next free publish slot: two a day, 11:00 AM and 5:30 PM New
+//                 York. Four made a day fill two days of slots, so the extra ones wait for the next free day.
+//                 Making never waits for an approval.
 //   No            asks what is wrong and keeps the reason and the screenshots for the fix step
 //   /settings     the upload settings, asked once with their options; title, description, hashtags and captions
 //                 are made by the studio, paid promotion and AI use are always "No"
@@ -13,10 +15,10 @@
 // State lives in KV: "state", "plan", "kernel" (cloud/kernel.py), "settings", "job:<id>", "await".
 // The Kaggle kernels report back on /hook with the shared secret.
 
+const SLOTS = ["11:00", "17:30"];  // New York time
 const FIXED = ["Paid promotion: No", "Altered or synthetic content (AI): No"];
 
 const SETTINGS = [
-  ["publish_time", "Publish time (New York)", ["11:00", "14:00", "17:00", "20:00"]],
   ["visibility", "Visibility after publish", ["Public", "Unlisted"]],
   ["category", "Category", ["Education", "Entertainment", "People & Blogs", "Film & Animation"]],
   ["made_for_kids", "Made for kids", ["No", "Yes"]],
@@ -224,11 +226,15 @@ function nyTime(date, hhmm) {
   return t;
 }
 
-function nextSlot(last, hhmm) {
-  let date = nyDate(Date.now());
+// the first slot after the last one given out and at least 2 hours away (time for the upload)
+function nextSlot(last) {
+  const after = Math.max(Date.now() + 2 * 3600e3, last ? Date.parse(last) : 0);
+  let date = nyDate(after - 24 * 3600e3);
   for (let i = 0; i < 400; i++) {
-    const t = nyTime(date, hhmm);
-    if (t > Date.now() + 2 * 3600e3 && (!last || date > last)) return { date, at: new Date(t).toISOString() };
+    for (const hhmm of SLOTS) {
+      const t = nyTime(date, hhmm);
+      if (t > after) return new Date(t).toISOString();
+    }
     date = nyDate(nyTime(date, "12:00") + 24 * 3600e3);
   }
 }
@@ -270,14 +276,14 @@ async function button(q, env) {
     const job = await get(env, `job:${a}`, { id: a, feedback: [] });
     const s = await state(env);
     const prefs = await get(env, "settings", {});
-    const slot = nextSlot(s.last_slot, prefs.publish_time || "11:00");
-    Object.assign(job, { status: "approved", approved: new Date().toISOString(), publish_at: slot.at });
-    s.last_slot = slot.date;
+    const slot = nextSlot(s.last_slot);
+    Object.assign(job, { status: "approved", approved: new Date().toISOString(), publish_at: slot });
+    s.last_slot = slot;
     await put(env, `job:${a}`, job);
     await put(env, "state", s);
     await Promise.all([done("Approved"), unbutton()]);
     const missing = SETTINGS.filter(([k]) => !(k in prefs)).length;
-    return say(env, `Approved: ${job.title || a}\nPublish: ${ny(slot.at)} New York (${ist(slot.at)} India)` +
+    return say(env, `Approved: ${job.title || a}\nPublish: ${ny(slot)} New York (${ist(slot)} India)` +
       (missing ? `\n\n${missing} upload settings are not chosen yet, send /settings` : ""));
   }
   if (what === "no") {
@@ -376,7 +382,7 @@ async function check(env) {
   const r = await fetch(`https://www.kaggle.com/api/v1/kernels/status?userName=${env.KAGGLE_USERNAME}&kernelSlug=studio-gpu`,
     { headers: { Authorization: "Basic " + btoa(`${env.KAGGLE_USERNAME}:${env.KAGGLE_KEY}`) } });
   const plan = await get(env, "plan", { days: [] });
+  const s = await state(env);
   return { kaggle: r.status, kaggle_status: (await r.json().catch(() => ({}))).status || null,
-           kernel: Boolean(await env.KV.get("kernel")), days: plan.days.length, state: await state(env),
-           slot_example: nextSlot(null, "11:00") };
+           kernel: Boolean(await env.KV.get("kernel")), days: plan.days.length, state: s, next_slot: nextSlot(s.last_slot) };
 }

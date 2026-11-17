@@ -216,10 +216,12 @@ always on:
   straight to Kaggle's API. One video at a time; none when the week's 30 Kaggle GPU hours are nearly used. A day that
   fails twice is skipped and reported. It is turned on once with `/resume` and then runs until the plan is done.
 - **Drive stays small.** The job folder is removed from Drive once the video is made.
-- **Yes and No.** Yes approves the video and gives it the next free publish slot (11 AM New York by default). No asks
-  what is wrong and keeps the reason and the screenshots you send for the fix step.
-- **Upload settings.** `/settings` asks each setting once with its options (category, audience, license, comments and
-  so on). The studio only writes the title, description, hashtags and captions. Paid promotion and AI use are always
+- **Yes and No.** Every finished video comes to Telegram with its Drive link and the two buttons, one message per
+  video. Yes approves it and gives it the next free publish slot: two a day, 11:00 AM and 5:30 PM New York. Four
+  made a day fill two days of slots, so the rest wait for the next free day, and making never waits for a review.
+  No asks what is wrong and keeps the reason and the screenshots you send for the fix step.
+- **Upload settings.** `/settings` asks each setting once with its options (visibility, category, audience, license,
+  comments and so on). The studio only writes the title, description, hashtags and captions. Paid promotion and AI use are always
   "No".
 - **Commands.** `/status`, `/next`, `/day N`, `/pause`, `/resume`, `/perday N`, `/starthour H`.
 
