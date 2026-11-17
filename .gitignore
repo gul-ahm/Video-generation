@@ -1,0 +1,28 @@
+# videos, logs and everything made per video
+output/
+_jobs/
+_ref/
+
+# secrets and local settings
+.env
+kaggle.json
+
+# personal voice and media that is not ours to share
+assets/*.wav
+assets/voice_refs/
+assets/music/
+assets/sfx/
+assets/reference/
+sfx/
+
+# downloaded tools and environments
+.venv*/
+tools/
+fx/node_modules/
+fx/.node/
+fx/skills/
+fx/hf/.hyperframes/
+
+__pycache__/
+*.pyc
+.DS_Store

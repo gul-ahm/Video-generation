@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>History Studio</title>
+<style>
+  :root {
+    --bg: #f4f1ea; --card: #fffdf8; --ink: #23201b; --soft: #6f685c; --line: #e3ddd0;
+    --accent: #b5562a; --ok: #3f7d4e; --warn: #b8860b; --bad: #a83a2c; --bar: #ece6d8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17150f; --card: #211e17; --ink: #efe9dc; --soft: #a39b8a; --line: #36312a;
+            --accent: #e08454; --ok: #6fb17f; --warn: #d9a93a; --bad: #e0705f; --bar: #2c2820; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0 auto 0 0; letter-spacing: .2px; }
+  .pill { padding: 3px 10px; border-radius: 99px; font-size: 13px; border: 1px solid var(--line); background: var(--card); }
+  main { display: grid; grid-template-columns: 340px 1fr; gap: 16px; padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--soft); margin: 0 0 12px; }
+  textarea { width: 100%; min-height: 90px; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; resize: vertical; }
+  .styles { display: grid; gap: 8px; margin: 12px 0; }
+  .style { display: flex; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+  .style.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .style b { display: block; }
+  .style small { color: var(--soft); }
+  .swatch { width: 44px; height: 44px; border-radius: 8px; flex: none; border: 1px solid var(--line); }
+  .swatch.storybook { background: linear-gradient(135deg, #f6d38a, #e58f5b 55%, #7aa6c2); }
+  .swatch.sketch { background: repeating-linear-gradient(45deg, #eee, #eee 4px, #bbb 4px, #bbb 5px); }
+  .swatch.documentary { background: linear-gradient(160deg, #2b2f36, #6b5a45 60%, #c9a76b); }
+  .sketch { background: repeating-linear-gradient(135deg, #fafafa 0 5px, #c9c9c9 5px 6px); }
+  .storybook { background: radial-gradient(circle at 30% 35%, #f6c46a 0 22%, transparent 23%), radial-gradient(circle at 70% 65%, #e9a3b4 0 20%, transparent 21%), #f3ecd6; }
+  label.check { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; cursor: pointer; }
+  label.check input { margin-top: 4px; accent-color: var(--accent); }
+  label.check small { color: var(--soft); }
+  label.row { display: flex; justify-content: space-between; margin-top: 6px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+  button.main { background: var(--accent); border-color: var(--accent); color: #fff; width: 100%; margin-top: 12px; font-weight: 600; }
+  button.small { padding: 3px 9px; font-size: 13px; }
+  .hint { color: var(--soft); font-size: 13px; margin-top: 6px; }
+  .now { display: grid; grid-template-columns: 1fr 300px; gap: 16px; }
+  @media (max-width: 1100px) { .now { grid-template-columns: 1fr; } }
+  .big { font-size: 20px; font-weight: 600; margin: 0 0 2px; }
+  .bar { height: 10px; background: var(--bar); border-radius: 99px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .6s; }
+  .stage { display: grid; grid-template-columns: 70px 1fr 90px; gap: 10px; align-items: center; margin: 8px 0; font-size: 14px; }
+  .stage .bar { height: 6px; }
+  .stage span:last-child { white-space: nowrap; color: var(--soft); font-size: 13px; }
+  .stage.cur span:first-child { color: var(--accent); font-weight: 600; }
+  .nums { display: flex; gap: 18px; margin: 12px 0; flex-wrap: wrap; }
+  .nums div b { display: block; font-size: 18px; }
+  .nums div { color: var(--soft); font-size: 13px; }
+  .nums div b { color: var(--ink); }
+  img.preview { width: 100%; border-radius: 8px; border: 1px solid var(--line); background: var(--bar); aspect-ratio: 16/9; object-fit: cover; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; height: 220px; overflow: auto; font: 12px/1.4 ui-monospace, Menlo, monospace; margin: 12px 0 0; white-space: pre-wrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td, th { text-align: left; padding: 8px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--soft); font-weight: 500; font-size: 13px; border-top: 0; }
+  .pack .row2 { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid var(--line); }
+  .pack .row2:first-child { border-top: 0; }
+  .pack .row2 > div { flex: 1; }
+  .pack .best { color: var(--accent); font-weight: 600; }
+  .pack pre { height: auto; max-height: 320px; }
+  .pack h3 { font-size: 14px; margin: 16px 0 6px; display: flex; justify-content: space-between; align-items: center; }
+  .st { font-size: 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid currentColor; white-space: nowrap; }
+  .queued { color: var(--soft); } .running { color: var(--accent); } .done { color: var(--ok); }
+  .failed, .stopped { color: var(--bad); }
+  .err { color: var(--bad); font-size: 12px; }
+  .path { font: 12px ui-monospace, Menlo, monospace; color: var(--soft); word-break: break-all; }
+  .warn { color: var(--warn); }
+  .empty { color: var(--soft); padding: 24px 0; text-align: center; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tabs button { flex: 1; }
+  .tabs button.on { border-color: var(--accent); color: var(--accent); font-weight: 600; box-shadow: 0 0 0 1px var(--accent) inset; }
+  .file { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .file a { color: var(--accent); font-size: 13px; }
+  .problems { color: var(--bad); font-size: 13px; margin: 8px 0 0; padding-left: 18px; }
+  .steps { list-style: none; padding: 0; margin: 14px 0 4px; display: grid; gap: 6px; }
+  .steps li { display: grid; grid-template-columns: 22px 150px 1fr; gap: 8px; align-items: baseline; font-size: 14px; }
+  .steps li .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line); align-self: center; }
+  .steps li.done .dot { background: var(--ok); border-color: var(--ok); }
+  .steps li.now .dot { border-color: var(--accent); border-top-color: transparent; animation: spin 1s linear infinite; }
+  .steps li.now b { color: var(--accent); }
+  .steps li.wait { color: var(--soft); }
+  .steps li small { color: var(--soft); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .steps li.now .dot { animation: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>History Studio</h1>
+  <span class="pill" id="status">connecting</span>
+  <span class="pill" id="mem"></span>
+  <button id="pause" class="small"></button>
+</header>
+<main>
+  <section class="card">
+    <h2>New video</h2>
+    <div class="tabs"><button id="tabTitle" class="on">Just a title</button><button id="tabScript">My own script</button></div>
+    <div id="byTitle">
+      <textarea id="topics" placeholder="One title per line, for example:&#10;The Mary Celeste&#10;The Flannan Isles Lighthouse"></textarea>
+      <div class="hint">Gemini reads Wikipedia, writes the script and the picture list, then the video is made.</div>
+      <label class="row"><span>Length</span><b id="len"></b></label>
+      <input type="range" id="minutes" min="5" max="60" step="5" value="15">
+      <div class="hint" id="cost"></div>
+    </div>
+    <div id="byScript" hidden>
+      <textarea id="script" placeholder="Paste your script here, or choose a file below.&#10;&#10;# Title&#10;## Chapter name&#10;> Wide shot of ... (a picture)&#10;Narration ..."></textarea>
+      <div class="file"><input type="file" id="file" accept=".md,.txt,text/plain">
+        <a href="/api/template">Download the template</a></div>
+      <div class="hint" id="scriptInfo">Lines: "# Title", "## Chapter", "> picture" (optional), then the narration. Full guide: samples/SCRIPT_FORMAT.md</div>
+      <ul class="problems" id="problems" hidden></ul>
+    </div>
+    <h3 style="margin:14px 0 0">Editing style</h3>
+    <div class="styles" id="styles"></div>
+    <div class="hint" id="styleInfo"></div>
+    <button class="main" id="add">Add to queue</button>
+    <div class="hint">Videos are made one after another. You can close this tab, the work goes on.</div>
+  </section>
+
+  <div style="display:grid; gap:16px; align-content:start">
+    <section class="card" id="nowcard">
+      <h2>Making now</h2>
+      <div class="empty" id="idle">Nothing running. Add a topic on the left.</div>
+      <div id="now" hidden>
+        <div class="now"><div id="info"></div>
+          <div><img class="preview" id="pic" alt=""><div class="hint">Latest picture</div></div></div>
+        <pre id="log"></pre>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Queue</h2>
+      <div id="queue"></div>
+    </section>
+    <section class="card pack" id="packcard" hidden>
+      <h2>YouTube pack <button class="small" id="packClose" style="float:right">Close</button></h2>
+      <div id="pack"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const mins = s => s < 60 ? "under 1 min" : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h ${Math.round(s % 3600 / 60)} min`;
+let style = "storybook", last = null, picUrl = "", mode = "title";
+
+async function post(action, body = {}) {
+  const r = await fetch(`/api/${action}`, {method: "POST", body: JSON.stringify(body)});
+  const s = await r.json();
+  if (s.problems) {
+    $("problems").innerHTML = s.problems.map(p => `<li>${esc(p)}</li>`).join("");
+    $("problems").hidden = false;
+    return false;
+  }
+  render(s);
+  return true;
+}
+
+function drawStyles(styles) {
+  if ($("styles").children.length) return;
+  $("styles").innerHTML = styles.map(s => `
+    <div class="style ${s.id === style ? "on" : ""}" data-id="${s.id}">
+      <div class="swatch ${s.id}"></div><div><b>${esc(s.name)}</b><small>${esc(s.about)}</small></div>
+    </div>`).join("");
+  for (const el of $("styles").children) el.onclick = () => {
+    style = el.dataset.id;
+    for (const o of $("styles").children) o.classList.toggle("on", o === el);
+    styleHint();
+  };
+  styleHint();
+}
+
+function styleHint() {
+  $("styleInfo").textContent = style !== "documentary" ? "" : mode === "title"
+    ? "Documentary: the system researches the title on the web first (about 20 to 40 minutes), then makes the film."
+    : "Documentary look for your own script: realistic pictures, no web research.";
+}
+
+function lengthHint() {
+  const m = +$("minutes").value;
+  $("len").textContent = `${m} min`;
+  if (last) $("cost").textContent = `Takes about ${mins(m * last.per_minute * 60)} on this Mac.`;
+  const text = $("script").value, words = text.replace(/^(#|>|card:|visuals:|thumb:).*$/gm, "").split(/\s+/).filter(Boolean).length;
+  const pics = (text.match(/^>/gm) || []).length, chapters = (text.match(/^## /gm) || []).length;
+  if (text.trim() && last) {
+    const v = words / 188;
+    $("scriptInfo").textContent = `${chapters} chapters, ${words} words, ${pics} picture lines: about ${v.toFixed(1)} min of video, made in about ${mins(v * last.per_minute * 60)}.`;
+  }
+}
+
+function drawNow(s) {
+  const L = s.live, job = s.jobs.find(j => j.id === L.id);
+  $("idle").hidden = !!job;
+  $("now").hidden = !job;
+  if (!job) return;
+  const spent = k => k === L.stage ? s.now - L.since : (L.spent || {})[k];
+  const rows = ["script", "voice", "visuals", "render"].map(k => {
+    const t = spent(k);
+    return `<div class="stage ${k === L.stage ? "cur" : ""}"><span>${k}</span>
+      <div class="bar"><i style="width:${((L.done || {})[k] || 0) * 100}%"></i></div><span>${t ? mins(t) : ""}</span></div>`;
+  }).join("");
+  const im = L.images ? `<div><b>${L.images.count}</b>pictures</div><div><b>${L.images.avg}s</b>per picture</div>
+      <div><b class="${L.images.slow ? "warn" : ""}">${L.images.slow}</b>slow pictures</div>` : "";
+  const finished = L.stage === "done";
+  $("info").innerHTML = `
+    <p class="big">${esc(job.topic)}</p>
+    <div class="hint">${esc(job.style)} · ${job.kind === "script" ? "your script" : job.style === "documentary" ? "researched script" : "Gemini script"} · ${L.video_min ? "video about " + L.video_min + " min (from the script)" : "about " + job.minutes + " min"} · ${esc(L.detail)}</div>
+    <div class="nums">
+      <div><b>${Math.round((L.share || 0) * 100)}%</b>done</div>
+      <div><b>${mins(s.now - L.started)}</b>running</div>
+      <div><b>${finished ? "0" : L.left_min ? "about " + mins(L.left_min * 60) : "under 1 min"}</b>left</div>${im}
+    </div>
+    <div class="bar"><i style="width:${(L.share || 0) * 100}%"></i></div>
+    <ul class="steps">${(L.steps || []).map(x => `<li class="${x.state}"><span class="dot"></span><b>${esc(x.name)}</b><small>${esc(x.text)}</small></li>`).join("")}</ul>
+    ${rows}
+    ${finished ? `<div class="path">${esc(L.final)}</div>` : ""}`;
+  const url = L.folder ? `/api/image?t=${Math.floor(s.now / 6)}` : "";
+  if (url !== picUrl) { picUrl = url; if (url) $("pic").src = url; }
+  const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+  log.textContent = (L.log || []).join("\n");
+  if (atEnd) log.scrollTop = log.scrollHeight;
+}
+
+function drawQueue(s) {
+  if (!s.jobs.length) { $("queue").innerHTML = `<div class="empty">The queue is empty.</div>`; return; }
+  const when = t => t ? new Date(t * 1000).toLocaleString([], {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "";
+  $("queue").innerHTML = `<table><tr><th>Topic</th><th>Style</th><th>Length</th><th>Status</th><th></th></tr>${
+    s.jobs.map(j => `<tr>
+      <td>${esc(j.topic)}${j.final ? `<div class="path">${esc(j.final)}</div>` : ""}${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}</td>
+      <td>${esc(j.style)}<div class="hint">${j.kind === "script" ? "your script" : j.style === "documentary" ? "title, web research" : "title only"}</div></td><td>${j.minutes} min</td>
+      <td><span class="st ${j.status}">${j.status}</span><div class="hint">${
+        j.status === "queued" && j.script ? {writing: "writing script now", ready: "script ready"}[j.script] || "" : when(j.finished || j.started)}</div></td>
+      <td>${j.status === "running" ? `<button class="small" data-a="stop" data-id="${j.id}">Stop</button>` : ""}
+          ${j.status === "queued" ? `<button class="small" data-a="up" data-id="${j.id}">Next</button>
+            <button class="small" data-a="remove" data-id="${j.id}">Remove</button>` : ""}
+          ${["failed", "stopped"].includes(j.status) ? `<button class="small" data-a="retry" data-id="${j.id}">Retry</button>
+            <button class="small" data-a="remove" data-id="${j.id}">Remove</button>` : ""}
+          ${j.status === "done" && j.junk ? `<button class="small" data-a="clean" data-id="${j.id}" data-gb="${j.junk}">Clean up ${j.junk} GB</button>` : ""}
+          ${j.status === "done" && j.cleaned ? `<div class="hint">cleaned, ${j.cleaned} GB freed</div>` : ""}
+          ${j.status === "done" ? (j.pack === "ready" ? `<button class="small" data-a="showpack" data-id="${j.id}">YouTube pack</button>`
+            : j.pack === "making" ? `<div class="hint">making the YouTube pack</div>`
+            : `<button class="small" data-a="pack" data-id="${j.id}">Make YouTube pack</button>${j.pack === "failed" ? `<div class="err">pack failed, see the log</div>` : ""}`) : ""}
+          ${j.status === "done" ? `<button class="small" data-a="remove" data-id="${j.id}">Hide</button>` : ""}</td>
+    </tr>`).join("")}</table>`;
+  for (const b of $("queue").querySelectorAll("button")) b.onclick = () => {
+    if (b.dataset.a === "stop" && !confirm("Stop this video? Finished parts are kept, Retry continues from there.")) return;
+    if (b.dataset.a === "clean" && !confirm(`Check the video first. Is it correct?\n\nThis deletes ${b.dataset.gb} GB of pictures, voice and chapter clips. Only final.mp4, thumbnail, youtube.txt and subtitles stay. This cannot be undone.`)) return;
+    if (b.dataset.a === "showpack") return showPack(b.dataset.id);
+    post(b.dataset.a, {id: b.dataset.id});
+  };
+}
+
+async function showPack(id) {
+  const r = await fetch(`/api/pack?id=${id}`);
+  if (!r.ok) return;
+  const p = await r.json(), best = Number.isInteger(p.best) ? p.best : 0;
+  const copy = (text, label = "Copy") => `<button class="small" data-copy="${esc(text)}">${label}</button>`;
+  const R = p.research || {};
+  $("pack").innerHTML = `
+    <div class="hint">Written by ${esc(p.model)}, from ${R.videos || 0} YouTube videos on this topic.</div>
+    <h3>Titles</h3>
+    ${(p.titles || []).map((t, i) => `<div class="row2"><div><div class="${i === best ? "best" : ""}">${i + 1}. ${esc(t.title)}${i === best ? " (best)" : ""}</div>
+      <div class="hint">${esc(t.pattern)}: ${esc(t.why)}</div></div>${copy(t.title)}</div>`).join("")}
+    <h3>Description ${copy(p.description || "")}</h3><pre>${esc(p.description)}</pre>
+    <h3>Hashtags ${copy((p.hashtags || []).join(" "))}</h3><div>${esc((p.hashtags || []).join(" "))}</div>
+    <h3>Tags ${copy((p.tags || []).join(", "))}</h3><div class="hint">${esc((p.tags || []).join(", "))}</div>
+    <h3>Thumbnail text ${copy(p.thumbnail_text || "")}</h3><div>${esc(p.thumbnail_text)}</div>
+    <h3>What the research showed</h3><ul>${(p.pattern_notes || []).map(n => `<li>${esc(n)}</li>`).join("")}</ul>
+    <table><tr><th>Title pattern</th><th>Median views with</th><th>without</th><th>Titles</th></tr>${(R.patterns || []).map(x =>
+      `<tr><td>${esc(x.pattern)}</td><td>${x.with.toLocaleString()}</td><td>${x.without.toLocaleString()}</td><td>${x.titles}</td></tr>`).join("")}</table>
+    <h3>Top videos found</h3><table>${(R.top || []).map(v =>
+      `<tr><td>${esc(v.title)}<div class="hint">${esc(v.channel)}</div></td><td>${v.views.toLocaleString()} views</td></tr>`).join("")}</table>
+    <button class="small" style="margin-top:12px" data-again="${id}">Make it again</button>`;
+  for (const b of $("pack").querySelectorAll("[data-copy]")) b.onclick = async () => {
+    await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1200);
+  };
+  $("pack").querySelector("[data-again]").onclick = () => { post("pack", {id}); $("packcard").hidden = true; };
+  $("packcard").hidden = false;
+  $("packcard").scrollIntoView({behavior: "smooth"});
+}
+
+function render(s) {
+  last = s;
+  drawStyles(s.styles);
+  lengthHint();
+  const running = s.jobs.some(j => j.status === "running");
+  $("status").textContent = s.paused ? "paused" : running ? "working" : "idle";
+  $("pause").textContent = s.paused ? "Resume queue" : "Pause queue";
+  const m = s.memory;
+  $("mem").innerHTML = m.total ? `RAM free ${m.free} of ${m.total} GB${m.swap > 1 ? ` · <span class="warn">swap ${m.swap} GB</span>` : ""}` : "";
+  drawNow(s);
+  drawQueue(s);
+}
+
+async function poll() {
+  try {
+    render(await (await fetch("/api/state")).json());
+  } catch {
+    $("status").textContent = "studio.py is not running";
+  }
+  setTimeout(poll, 2000);
+}
+
+$("packClose").onclick = () => { $("packcard").hidden = true; };
+$("minutes").oninput = lengthHint;
+$("pause").onclick = () => post(last && last.paused ? "resume" : "pause");
+function tab(m) {
+  mode = m;
+  $("tabTitle").classList.toggle("on", m === "title");
+  $("tabScript").classList.toggle("on", m === "script");
+  $("byTitle").hidden = m !== "title";
+  $("byScript").hidden = m !== "script";
+  styleHint();
+}
+$("tabTitle").onclick = () => tab("title");
+$("tabScript").onclick = () => tab("script");
+$("script").oninput = () => { $("problems").hidden = true; lengthHint(); };
+$("file").onchange = async () => {
+  const f = $("file").files[0];
+  if (f) { $("script").value = await f.text(); $("problems").hidden = true; lengthHint(); }
+};
+$("add").onclick = async () => {
+  if (mode === "script") {
+    if (!$("script").value.trim()) return $("script").focus();
+    if (await post("script", {script: $("script").value, style})) { $("script").value = ""; $("file").value = ""; }
+    return;
+  }
+  if (!$("topics").value.trim()) return $("topics").focus();
+  post("add", {topics: $("topics").value, style, minutes: +$("minutes").value});
+  $("topics").value = "";
+};
+poll();
+</script>
+</body>
+</html>

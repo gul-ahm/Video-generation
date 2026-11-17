@@ -1,0 +1,23 @@
+{
+  "name": "history-studio-fx",
+  "version": "1.0.0",
+  "description": "HyperFrames and Remotion effects for History Studio",
+  "scripts": {
+    "test": "cd .. && python3 fx.py test"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@remotion/bundler": "4.0.542",
+    "@remotion/cli": "4.0.542",
+    "@remotion/light-leaks": "4.0.542",
+    "@remotion/renderer": "4.0.542",
+    "@remotion/transitions": "4.0.542",
+    "gsap": "3.14.2",
+    "hyperframes": "0.9.33",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "remotion": "4.0.542"
+  },
+  "private": true,
+  "type": "module"
+}
