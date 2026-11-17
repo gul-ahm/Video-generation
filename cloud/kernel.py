@@ -17,7 +17,9 @@ import time
 from pathlib import Path
 
 RUN = json.loads(r"""__RUN__""")
-W = Path("/kaggle/working")
+# the work happens in /kaggle/temp, which Kaggle does not keep: the run's output is then only its log, a few kB to
+# download when something has to be checked (from /kaggle/working it was the whole studio, 25 minutes to fetch)
+W = Path("/kaggle/temp")
 HOME = W / "studio"
 NEXT = {"research": "gpu", "gpu": "render", "render": None}
 NODE = "https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz"
@@ -30,11 +32,12 @@ def sh(cmd, **kw):
 
 def unpack():
     """Code, assets and secrets from the three private datasets; secrets also give Kaggle's own token."""
+    HOME.mkdir(parents=True, exist_ok=True)
     for name in ("code", "assets", "secrets"):
         tgz = next(Path("/kaggle/input").rglob(f"{name}.tgz"), None)
         if tgz:
             with tarfile.open(tgz) as t:
-                t.extractall(HOME)
+                t.extractall(HOME, filter="fully_trusted")
         else:  # Kaggle unpacked the archive itself
             shutil.copytree(next(Path("/kaggle/input").glob(f"*{name}*")), HOME, dirs_exist_ok=True)
     kag = Path.home() / ".kaggle"
@@ -50,11 +53,13 @@ def unpack():
 
 def install(stage):
     pip = [sys.executable, "-m", "pip", "install", "-q"]
-    sh(pip + ["-r", str(HOME / "requirements.txt"), "kaggle", "soundfile", "yt-dlp"])
+    # the Kaggle image has an older kaggle tool without "benchmarks ... --wait", so the director fell back to Gemini;
+    # this is the version the Mac runs
+    sh(pip + ["-r", str(HOME / "requirements.txt"), "kaggle==2.2.5", "soundfile", "yt-dlp"])
     if stage == "research":
         sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"])
     if stage == "gpu":
-        sh(pip + ["chatterbox-tts"])  # the same voice model the Mac runs through MLX, here on CUDA
+        voice_model(pip)
     if stage == "render":
         node = HOME / "fx" / ".node"
         if not (node / "bin" / "node").exists():
@@ -63,6 +68,32 @@ def install(stage):
         if sh([sys.executable, "fx.py", "setup"], cwd=HOME, check=False).returncode:
             with open(HOME / ".env", "a") as f:  # the film still renders, without the Remotion and HyperFrames effects
                 f.write("FX=0\n")
+
+
+def voice_model(pip):
+    """The voice model on CUDA. chatterbox-tts pins torch 2.6, which broke Kaggle's own torchvision ("operator
+    torchvision::nms does not exist") and with it transformers. So the same package the Mac runs goes in without its
+    pins (its PyTorch path needs no MLX and works with today's transformers) and Kaggle's torch stays. If that torch is
+    too new for it, the set the Mac runs (torch 2.8, torchaudio 2.8, torchvision 0.23) goes in as a matched trio.
+    The import is tried here, so a broken voice stops the run in minutes, before any planning."""
+    sh(pip + ["--no-deps", "chatterbox-mlx==1.3.1", "s3tokenizer==0.3.0", "resemble-perth==1.0.1", "conformer==0.3.2"])
+    sh(pip + ["onnx", "einops", "pyloudnorm", "librosa==0.11.0", "psutil", "tqdm", "transformers>=5.10",
+              "diffusers==0.35.2"])
+    probe = [sys.executable, "-c", "import torch, torchaudio, torchvision; from chatterbox.tts import ChatterboxTTS; "
+             "print('voice model ok, torch', torch.__version__, 'cuda', torch.cuda.is_available())"]
+    if sh(probe, check=False).returncode == 0:
+        return
+    torch = subprocess.run([sys.executable, "-c", "import torch; print(torch.__version__)"], capture_output=True,
+                           text=True).stdout.strip()
+    base, cuda = (torch.split("+") + [""])[:2]
+    if cuda.startswith("cu"):  # first only torchaudio, built for the torch that is there
+        sh(pip + ["--no-deps", f"torchaudio=={base}", "--index-url", f"https://download.pytorch.org/whl/{cuda}"],
+           check=False)
+        if sh(probe, check=False).returncode == 0:
+            return
+    sh(pip + ["torch==2.8.0", "torchaudio==2.8.0", "torchvision==0.23.0", "--index-url",
+              "https://download.pytorch.org/whl/cu128"])
+    sh(probe)
 
 
 def folder():
@@ -78,7 +109,7 @@ def state(direction):
         if not drive.download(tgz.name, tgz):
             raise SystemExit(f"{tgz.name} is not on Drive")
         with tarfile.open(tgz) as t:
-            t.extractall(HOME / "output")
+            t.extractall(HOME / "output", filter="fully_trusted")
     else:
         with tarfile.open(tgz, "w:gz") as t:
             t.add(folder(), arcname=RUN["slug"], filter=lambda i: None if "/chapters/" in i.name else i)

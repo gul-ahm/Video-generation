@@ -42,8 +42,12 @@ def refine(path, words):
         return words
     # the python.org Python on a Mac has no certificates of its own, so the model download needs certifi's
     os.environ.setdefault("SSL_CERT_FILE", certifi.where())
-    bundle = torchaudio.pipelines.MMS_FA
-    model, tokenizer, aligner = bundle.get_model().eval(), bundle.get_tokenizer(), bundle.get_aligner()
+    try:  # newer torchaudio builds may lack the aligner; the guessed times are then kept
+        bundle = torchaudio.pipelines.MMS_FA
+        model, tokenizer, aligner = bundle.get_model().eval(), bundle.get_tokenizer(), bundle.get_aligner()
+    except Exception as err:
+        print(f"  word times: aligner not available ({str(err)[:80]}), guessed times kept", flush=True)
+        return words
     with wave.open(str(path)) as f:
         rate, pcm = f.getframerate(), np.frombuffer(f.readframes(f.getnframes()), np.int16)
     audio = torchaudio.functional.resample(torch.from_numpy(pcm.astype(np.float32) / 32768), rate, RATE)
