@@ -46,9 +46,14 @@ BLOCKED = ("just a moment", "checking your browser", "attention required", "acce
 # academic and reference sources: a claim backed by one of them is not a blog's guess
 EXPERT_SITES = (".edu", ".ac.uk", ".ac.in", ".ac.jp", "cambridge.org", "oup.com", "jstor.org", "brill.com", "tandfonline.com",
                 "springer.com", "sciencedirect.com", "muse.jhu.edu", "persee.fr", "cairn.info", "academia.edu", "britannica.com",
-                "metmuseum.org", "bl.uk", "loc.gov", "doi.org", "dumbartonoaks.org", "iranicaonline.org", "islamansiklopedisi.org.tr")
+                "metmuseum.org", "bl.uk", "loc.gov", "doi.org", "dumbartonoaks.org", "iranicaonline.org", "islamansiklopedisi.org.tr",
+                # edited references, primary texts and history magazines written by historians
+                "wikipedia.org", "wikisource.org", "deremilitari.org", "worldhistory.org", "historynet.com", "historytoday.com",
+                "smithsonianmag.com", "nationalgeographic.com", "bbc.co.uk", "bbc.com", "history.com")
 SCHOLAR = re.compile(r"\b(historian|professor|prof\.|scholar|dr\.|chronicler|imam|shaykh|sheikh|ibn \w+)\b", re.I)
-SKIP = ("youtube.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "pinterest.", "reddit.com",
+# pages written by a language model are not sources
+SKIP_AI = ("grokipedia.com", "brightlearn.ai", "llmpedia")
+SKIP = SKIP_AI + ("youtube.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "pinterest.", "reddit.com",
         "quora.com", "linkedin.com")
 
 QUESTIONS = """We are making a serious {minutes} minute documentary: "{title}".{about}
@@ -83,6 +88,12 @@ Merge ONLY claims that state the same fact into one entry listing every source n
 distinct fact, date, number, name and detail keeps its own entry, so the ledger stays almost as long as the list.
 Where sources contradict each other, keep one entry and describe the disagreement in "note".
 Return JSON: {{"claims": [{{"claim": "...", "sources": [1, 4], "date": "", "allegation": false, "note": ""}}]}}
+
+{claims}"""
+
+ISLAMIC = """These claims were marked as religious. Keep only those about Islam itself: the Prophet Muhammad, his
+Companions, a hadith, the Quran, or Islamic belief and worship. Claims about Christianity, churches, icons, other faiths,
+buildings or a ruler's politics are not. Return JSON: {{"islamic": [the numbers to keep]}}
 
 {claims}"""
 
@@ -240,7 +251,7 @@ def ledger(title, sources, folder):
     out = folder / "claims.json"
     if out.exists():
         return json.loads(out.read_text(encoding="utf-8"))
-    sources[:] = [s for s in sources if not blocked(s["text"])]  # sources saved before the block check
+    sources[:] = [s for s in sources if not blocked(s["text"]) and not any(x in s["site"] for x in SKIP_AI)]
     def study(s):
         cache = folder / f"read_{s['id']:03d}.json"
         if not cache.exists():
@@ -295,6 +306,16 @@ def ledger(title, sources, folder):
         c["experts"] = list(dict.fromkeys(
             [site_of[i] for i in best if any(site_of.get(i, "").endswith(x) or x + "." in site_of.get(i, "") for x in EXPERT_SITES)]
             + [r["said_by"] for r in best.values() if r and SCHOLAR.search(str(r.get("said_by", "")))]))
+    flagged = [c for c in merged if c.get("religious")]
+    for k in range(0, len(flagged), 80):  # the reader marks Christian and church matters too; only Islamic ones count
+        piece = flagged[k:k + 80]
+        try:
+            keep = set(writer.llm(ISLAMIC.format(claims="\n".join(f"{n}. {c['claim']}" for n, c in enumerate(piece, 1))),
+                                  as_json=True, temp=0.1).get("islamic", []))
+        except (Exception, SystemExit):
+            continue
+        for n, c in enumerate(piece, 1):
+            c["religious"] = n in keep
     dropped = sunni(merged, sources) if os.getenv("DOC_SUNNI", "1") == "1" else []
     merged = [c for c in merged if c not in dropped]
     where = {s["id"]: s["site"] for s in sources}
