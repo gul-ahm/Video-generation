@@ -108,7 +108,11 @@ def deliver():
     pack = json.loads((f / "youtube_pack.json").read_text()) if (f / "youtube_pack.json").exists() else {}
     titles = pack.get("titles") or [{}]
     best = titles[pack.get("best", 0) if isinstance(pack.get("best"), int) else 0].get("title") or RUN["title"]
-    drive.tell(f"Video ready: {best}\n\nWatch: {link}\n\nCheck the screenshots and facts, then approve.",
+    check = f / "research" / "title_check.json"
+    check = json.loads(check.read_text()) if check.exists() else {}
+    warn = ("" if check.get("ok", True) else
+            f"\n\nTitle check: {'; '.join(check.get('problems', []))[:600]}\nSuggested title: {check.get('title')}")
+    drive.tell(f"Video ready: {best}\n\nWatch: {link}{warn}\n\nCheck the screenshots and facts, then approve.",
                [("Yes, publish", f"yes:{RUN['id']}"), ("No", f"no:{RUN['id']}")])
 
 

@@ -41,6 +41,7 @@ def main(title, minutes=22):
         if len(sources) < 6:
             sys.exit(f"only {len(sources)} readable sources found for this title; try a more specific headline")
         claims = research.ledger(title, sources, folder / "research")
+        research.check_title(title, claims, folder / "research")
         sources = assets.screenshots(sources, folder / "research" / "shots")
         write.script(title, minutes, claims, sources, folder)
     print(f"script ready: {folder / 'script.md'}", flush=True)

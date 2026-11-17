@@ -86,6 +86,16 @@ Return JSON: {{"claims": [{{"claim": "...", "sources": [1, 4], "date": "", "alle
 
 {claims}"""
 
+TITLE = """A documentary is planned with the title: "{title}". Below is its checked research ledger.
+Check every fact the title promises (numbers on each side, how long it lasted, who won, what it ended) against the
+ledger. A number from early chronicles that modern historians put much lower may stay if the ledger has it, but say
+so. Then write the most accurate title in the same style ("N vs N: The ... That ..."), changing only what is wrong.
+Return JSON: {{"ok": true, "problems": ["each wrong or unsupported part, with the ledger's figure"],
+"title": "the corrected title (the same as the original when ok)", "note": "one line on the numbers' sources"}}
+
+LEDGER
+{ledger}"""
+
 BACKENDS = {"text": ["duckduckgo", "bing", "brave", "mojeek", "yahoo", "startpage", "google"],
             "news": ["duckduckgo", "bing", "yahoo"]}
 _turn = {"text": 0, "news": 0}
@@ -339,3 +349,19 @@ def sunni(claims, sources):
         else:
             dropped.append(c)
     return dropped
+
+
+def check_title(title, claims, folder):
+    """research/title_check.json: does the headline promise what the sources say? A wrong number or a wrong winner in
+    the title would make the whole video look false, so it is checked and a corrected title is proposed."""
+    out = folder / "title_check.json"
+    if not out.exists():
+        ledger = "\n".join(f"{c['id']}. ({c['status']}) {c['claim']}" for c in claims[:400])
+        got = writer.llm(TITLE.format(title=title, ledger=ledger), as_json=True, temp=0.2)
+        out.write_text(json.dumps(got, ensure_ascii=False, indent=1), encoding="utf-8")
+    got = json.loads(out.read_text(encoding="utf-8"))
+    if not got.get("ok", True):
+        writer.say(f"title check: {'; '.join(got.get('problems', []))[:300]}")
+        writer.say(f"suggested title: {got.get('title')}")
+    return got
+
