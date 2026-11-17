@@ -11,6 +11,10 @@
 4. The claims are merged into one ledger. A claim found on two or more independent sites is "confirmed"; on one
    site it is "reported"; where sources disagree, or it is an accusation against a person, it is "disputed" or
    "alleged", and the script has to say so.
+5. Religious claims (the Prophet, the Sahaba, matters of faith) are kept only when their source is one of the Sunni
+   books or sites in sunni_books.json, and they carry the book's name into the script. Everything else is researched
+   on the open web as above. DOC_SUNNI=0 turns this off.
+6. A page that is a block or check page (Cloudflare "Just a moment", "Access denied", a captcha) is never a source.
 Everything is kept in <video>/research/: sources.json, claims.json and sources.md for a human to check.
 """
 import json
@@ -28,6 +32,12 @@ import writer
 
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/126.0 Safari/537.36"}
+SUNNI = json.loads((Path(__file__).parent / "sunni_books.json").read_text(encoding="utf-8"))
+# words of block, check and error pages; a real article that happens to use one is long, a block page is short
+BLOCKED = ("just a moment", "checking your browser", "attention required", "access denied", "verify you are human",
+           "enable javascript and cookies", "are you a robot", "unusual traffic", "content unavailable",
+           "page not found", "404 not found", "please enable cookies", "cloudflare ray id", "captcha",
+           "subscribe to continue reading", "this site can't be reached")
 SKIP = ("youtube.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "pinterest.", "reddit.com",
         "quora.com", "linkedin.com")
 
@@ -36,7 +46,9 @@ Write the web searches a careful researcher would run to cover it completely. {n
 angle: the background, the full timeline day by day, each main person, army or organisation, the key numbers, the
 weapons and tactics, the central dispute and each side of it, primary sources and eyewitness accounts, official
 documents, archaeology, expert and academic analysis, myths versus facts, and what happened afterwards.
-Short search phrases, the way people type them. Return JSON: {{"searches": ["...", "..."]}}"""
+Short search phrases, the way people type them. Also say whether the story belongs to Islamic history (the Prophet,
+the Sahaba, the caliphates, Muslim rulers and armies) and give its main subject in a few words.
+Return JSON: {{"searches": ["...", "..."], "islamic": false, "subject": "..."}}"""
 
 GAPS = """We are researching the documentary "{title}". These are the headlines of the sources found so far:
 {found}
@@ -46,10 +58,12 @@ Return JSON: {{"searches": ["...", "..."]}}"""
 
 READ = """Documentary: "{title}". Below is one source. List every fact in it that matters for this story.
 For each: the claim in one plain sentence; the exact words of the source it rests on (a short quote, copied);
-who says it if the source attributes it to someone; any date; and whether it is an accusation or an unproven
-allegation against a person or organisation. Only what this text itself states; nothing from your own knowledge.
+who says it if the source attributes it to someone; any date; whether it is an accusation or an unproven
+allegation against a person or organisation; and whether it is religious (about the Prophet, the Sahaba, matters of
+faith, their virtues or intentions; battles, numbers and places are not religious). Only what this text itself
+states; nothing from your own knowledge.
 Return JSON: {{"published": "date of the article if stated, else empty", "claims": [{{"claim": "...", "quote": "...",
-"said_by": "", "date": "", "allegation": false}}]}}
+"said_by": "", "date": "", "allegation": false, "religious": false}}]}}
 
 SOURCE ({site}): {headline}
 {text}"""
@@ -132,9 +146,18 @@ def read(url):
         got = trafilatura.extract(r.text, include_comments=False, include_tables=True, output_format="json",
                                   with_metadata=True)
         got = json.loads(got) if got else {}
-        return got.get("text") or "", got.get("title") or "", got.get("date") or ""
+        text = got.get("text") or ""
+        if blocked(text):
+            return "", "", ""
+        return text, got.get("title") or "", got.get("date") or ""
     except Exception:
         return "", "", ""
+
+
+def blocked(text):
+    """A block, check or error page instead of the article."""
+    head = text[:1500].lower()
+    return len(text.split()) < 600 and any(b in head for b in BLOCKED)
 
 
 def site(url):
@@ -164,7 +187,12 @@ def gather(title, minutes, folder):
                                    "headline": r["title"] or head, "published": date, "words": len(text.split()),
                                    "text": text}
 
-    asks = writer.llm(QUESTIONS.format(title=title, minutes=minutes, n=24), as_json=True, temp=0.4)["searches"][:24]
+    plan = writer.llm(QUESTIONS.format(title=title, minutes=minutes, n=24), as_json=True, temp=0.4)
+    asks = plan["searches"][:24]
+    if plan.get("islamic") and os.getenv("DOC_SUNNI", "1") == "1":  # the Sunni books, searched by name
+        subject = plan.get("subject") or title.split(":")[0]
+        asks += [f"{subject} site:sunnah.com", f"{subject} Ibn Kathir al-Bidaya wa al-Nihaya", f"{subject} al-Tabari history",
+                 f"{subject} Ibn Hisham sirah", f"{subject} Ibn Sa'd Tabaqat", f"{subject} al-Dhahabi Siyar", f"{subject} site:archive.org"]
     for q in [title, *asks]:
         writer.say(f"searching: {q}")
         take(search(q))
@@ -186,6 +214,7 @@ def ledger(title, sources, folder):
     out = folder / "claims.json"
     if out.exists():
         return json.loads(out.read_text(encoding="utf-8"))
+    sources[:] = [s for s in sources if not blocked(s["text"])]  # sources saved before the block check
     def study(s):
         cache = folder / f"read_{s['id']:03d}.json"
         if not cache.exists():
@@ -228,6 +257,17 @@ def ledger(title, sources, folder):
         else:
             kept.append(c)
     merged = kept
+    by_source = {}
+    for c in raw:
+        by_source.setdefault(c["source"], []).append(c)
+    for c in merged:  # the words each source uses for this claim: the screenshot highlights them
+        best = {i: max(by_source.get(i, []), default=None,
+                       key=lambda r: SequenceMatcher(None, r["claim"].lower(), c["claim"].lower()).ratio())
+                for i in c.get("sources", [])}
+        c["quotes"] = {str(i): r["quote"] for i, r in best.items() if r}
+        c["religious"] = any(r.get("religious") for r in best.values() if r)
+    dropped = sunni(merged, sources) if os.getenv("DOC_SUNNI", "1") == "1" else []
+    merged = [c for c in merged if c not in dropped]
     where = {s["id"]: s["site"] for s in sources}
     for n, c in enumerate(merged, 1):
         c["sources"] = [i for i in c.get("sources", []) if i in where]
@@ -239,10 +279,40 @@ def ledger(title, sources, folder):
     out.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
     (folder / "sources.json").write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8")
     md = [f"# Sources for: {title}", "", f"{len(sources)} sources, {len(merged)} claims "
-          f"({sum(c['status'] == 'confirmed' for c in merged)} confirmed by two or more sites).", ""]
+          f"({sum(c['status'] == 'confirmed' for c in merged)} confirmed by two or more sites, "
+          f"{sum(bool(c.get('books')) for c in merged)} religious from the Sunni books, "
+          f"{len(dropped)} religious claims dropped for want of a Sunni source).", ""]
     md += [f"{s['id']}. [{s['headline'] or s['site']}]({s['url']}) ({s['site']}{', ' + s['published'] if s.get('published') else ''})"
            for s in sources]
     md += ["", "## Claims", ""] + [f"- **{c['status']}** {c['claim']} [{', '.join(map(str, c['sources']))}]"
+                                   + (f" Book: {', '.join(c['books'])}" if c.get("books") else "")
                                    + (f" Note: {c['note']}" if c.get("note") else "") for c in merged]
+    if dropped:
+        md += ["", "## Religious claims dropped (no Sunni book or site behind them)", ""]
+        md += [f"- {c['claim']} [{', '.join(map(str, c.get('sources', [])))}]" for c in dropped]
     (folder.parent / "sources.md").write_text("\n".join(md), encoding="utf-8")
     return merged
+
+
+def sunni(claims, sources):
+    """Religious claims need a source from the Sunni list: an approved site, or the source naming an approved book
+    near the quoted words. Those keep the book names in "books"; the others are returned to be dropped."""
+    text = {s["id"]: s["text"].lower() for s in sources}
+    sites = {s["id"]: s["site"] for s in sources}
+    dropped = []
+    for c in claims:
+        if not c.get("religious"):
+            continue
+        books = []
+        for i in c.get("sources", []):
+            t, q = text.get(i, ""), c.get("quotes", {}).get(str(i), "").lower()
+            at = t.find(" ".join(q.split()[:6])) if q else -1
+            near = t[max(0, at - 600):at + 600] if at >= 0 else ""
+            named = [b["title"] for b in SUNNI["books"] if any(n in near for n in b["names"])]
+            if named or any(sites.get(i, "").endswith(x) for x in SUNNI["sites"]):
+                books += named or [sites[i]]
+        if books:
+            c["books"] = list(dict.fromkeys(books))
+        else:
+            dropped.append(c)
+    return dropped

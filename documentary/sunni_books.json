@@ -1,0 +1,227 @@
+{
+ "note": "Religious claims (the Prophet, the Sahaba, matters of faith) are kept only from these books or these sites. Edit this list to add or remove a book.",
+ "sites": [
+  "sunnah.com",
+  "shamela.ws",
+  "islamweb.net",
+  "dorar.net",
+  "quran.com"
+ ],
+ "books": [
+  {
+   "title": "Sahih al-Bukhari",
+   "author": "Imam al-Bukhari",
+   "names": [
+    "sahih al-bukhari",
+    "sahih bukhari",
+    "al-bukhari",
+    "bukhari"
+   ]
+  },
+  {
+   "title": "Sahih Muslim",
+   "author": "Imam Muslim",
+   "names": [
+    "sahih muslim"
+   ]
+  },
+  {
+   "title": "Sunan Abi Dawud",
+   "author": "Abu Dawud",
+   "names": [
+    "sunan abi dawud",
+    "sunan abu dawud",
+    "abu dawud"
+   ]
+  },
+  {
+   "title": "Jami al-Tirmidhi",
+   "author": "al-Tirmidhi",
+   "names": [
+    "jami al-tirmidhi",
+    "tirmidhi"
+   ]
+  },
+  {
+   "title": "Musnad Ahmad",
+   "author": "Imam Ahmad ibn Hanbal",
+   "names": [
+    "musnad ahmad",
+    "musnad imam ahmad"
+   ]
+  },
+  {
+   "title": "Al-Muwatta",
+   "author": "Imam Malik",
+   "names": [
+    "muwatta"
+   ]
+  },
+  {
+   "title": "Al-Sirah al-Nabawiyyah",
+   "author": "Ibn Hisham, from Ibn Ishaq",
+   "names": [
+    "ibn hisham",
+    "ibn ishaq",
+    "sirat rasul allah"
+   ]
+  },
+  {
+   "title": "Al-Tabaqat al-Kubra",
+   "author": "Ibn Sa'd",
+   "names": [
+    "tabaqat",
+    "ibn sa'd",
+    "ibn saad"
+   ]
+  },
+  {
+   "title": "Zad al-Ma'ad",
+   "author": "Ibn al-Qayyim",
+   "names": [
+    "zad al-ma'ad",
+    "zad al-maad",
+    "ibn al-qayyim",
+    "ibn qayyim"
+   ]
+  },
+  {
+   "title": "Tarikh al-Rusul wa al-Muluk",
+   "author": "Imam al-Tabari",
+   "names": [
+    "tabari",
+    "tarikh al-rusul"
+   ]
+  },
+  {
+   "title": "Al-Bidaya wa al-Nihaya",
+   "author": "Ibn Kathir",
+   "names": [
+    "ibn kathir",
+    "al-bidaya",
+    "bidayah wan nihayah"
+   ]
+  },
+  {
+   "title": "Al-Kamil fi al-Tarikh",
+   "author": "Ibn al-Athir",
+   "names": [
+    "ibn al-athir",
+    "al-kamil fi al-tarikh"
+   ]
+  },
+  {
+   "title": "Futuh al-Buldan",
+   "author": "al-Baladhuri",
+   "names": [
+    "baladhuri",
+    "futuh al-buldan"
+   ]
+  },
+  {
+   "title": "Tarikh Khalifa",
+   "author": "Khalifa ibn Khayyat",
+   "names": [
+    "khalifa ibn khayyat"
+   ]
+  },
+  {
+   "title": "Al-Isaba fi Tamyiz al-Sahaba",
+   "author": "Ibn Hajar al-Asqalani",
+   "names": [
+    "al-isaba",
+    "ibn hajar"
+   ]
+  },
+  {
+   "title": "Usd al-Ghaba",
+   "author": "Ibn al-Athir",
+   "names": [
+    "usd al-ghaba",
+    "usd al-ghabah"
+   ]
+  },
+  {
+   "title": "Siyar A'lam al-Nubala",
+   "author": "Imam al-Dhahabi",
+   "names": [
+    "siyar a'lam",
+    "siyar alam",
+    "dhahabi"
+   ]
+  },
+  {
+   "title": "Tarikh al-Khulafa",
+   "author": "Imam al-Suyuti",
+   "names": [
+    "tarikh al-khulafa",
+    "history of the caliphs",
+    "suyuti"
+   ]
+  },
+  {
+   "title": "Al-Awasim min al-Qawasim",
+   "author": "Qadi Abu Bakr ibn al-Arabi",
+   "names": [
+    "al-awasim",
+    "ibn al-arabi"
+   ]
+  },
+  {
+   "title": "Al-Nawadir al-Sultaniyya",
+   "author": "Baha al-Din ibn Shaddad",
+   "names": [
+    "ibn shaddad",
+    "al-nawadir al-sultaniyya"
+   ]
+  },
+  {
+   "title": "Kitab al-Rawdatayn",
+   "author": "Abu Shama",
+   "names": [
+    "abu shama",
+    "rawdatayn"
+   ]
+  },
+  {
+   "title": "Ar-Raheeq al-Makhtum",
+   "author": "Safiur Rahman Mubarakpuri",
+   "names": [
+    "raheeq",
+    "sealed nectar",
+    "mubarakpuri"
+   ]
+  },
+  {
+   "title": "Sirat-un-Nabi",
+   "author": "Shibli Nomani and Sulaiman Nadvi",
+   "names": [
+    "sirat-un-nabi",
+    "shibli nomani",
+    "sulaiman nadvi"
+   ]
+  },
+  {
+   "title": "Tarikh-e-Islam",
+   "author": "Akbar Shah Najibabadi",
+   "names": [
+    "najibabadi"
+   ]
+  },
+  {
+   "title": "The Battlefields of the Prophet Muhammad",
+   "author": "Dr. Muhammad Hamidullah",
+   "names": [
+    "hamidullah"
+   ]
+  },
+  {
+   "title": "Biographies by Dr. Ali Muhammad al-Sallabi",
+   "author": "Dr. Ali Muhammad al-Sallabi",
+   "names": [
+    "sallabi",
+    "sallaabee"
+   ]
+  }
+ ]
+}

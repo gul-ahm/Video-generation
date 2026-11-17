@@ -3,13 +3,16 @@
 Every chapter is given the claims it may use, with their status: a "confirmed" claim is told as fact, a "reported"
 one names who reported it, an "alleged" or "disputed" one is told as an allegation with both sides. The length is
 held to the voice's real pace (188 words a minute): a chapter that comes back short is sent back for more.
-Pictures are literal: a beat that rests on an article shows that article's screenshot, the others get a realistic
-scene of what the sentence says (no metaphors, no children, no animals the story does not have).
+Pictures are literal: a beat that rests on an article shows that article's screenshot, with the very words the
+narration rests on marked in yellow when they can be found on the page; the others get a realistic scene of what the
+sentence says (no metaphors, no children, no animals the story does not have). A religious claim names its Sunni
+book when it is told.
 """
 import json
 import os
 import re
 
+import assets
 import writer
 
 SPOKEN = 188
@@ -38,6 +41,8 @@ names over general lines, and claims confirmed by several sources first.
 - confirmed: tell it as fact.
 - reported: say who reported it ("according to Reuters", "the filing shows").
 - alleged or disputed: say it is alleged, by whom, and what the other side answers. Never state it as fact.
+- a claim marked with a Book: name the book when you tell it ("according to Sahih al-Bukhari", "Ibn Kathir
+  writes in al-Bidaya"), with respect for the Prophet and his Companions.
 Plain spoken English, short sentences, present tension, no headings, no lists, no "in this video", no greeting.
 {extra}
 After a sentence that rests on a claim, put its number in square brackets, like [12]. One paragraph per idea,
@@ -67,6 +72,7 @@ Return JSON: {{"prompts": ["...", "..."]}} with exactly {n} prompts.
 
 def lines(claims, ids=None):
     return "\n".join(f"{c['id']}. ({c['status']}) {c['claim']}" + (f" [{c['date']}]" if c.get("date") else "")
+                     + (f" Book: {', '.join(c['books'])}" if c.get("books") else "")
                      + (f" Note: {c['note']}" if c.get("note") else "")
                      for c in claims if ids is None or c["id"] in ids)
 
@@ -87,7 +93,7 @@ def script(title, minutes, claims, sources, folder):
     by_id = {c["id"]: c for c in claims}
     shot_of = {s["id"]: s for s in sources if s.get("shot")}
     summary = " | ".join(f"{i}. {c['title']}" for i, c in enumerate(chapters, 1))
-    prev, used = "(this is the opening)", set()
+    prev, used, cards = "(this is the opening)", set(), []
     md = [f"# {plan['title']}", f"thumb: {plan['thumb']}", ""]
     for i, c in enumerate(chapters, 1):
         f = parts / f"ch{i:02d}.txt"
@@ -126,15 +132,20 @@ def script(title, minutes, claims, sources, folder):
         for beat, pic in zip(beats, pics):
             cited = [int(x) for group in re.findall(r"\[([\d,\s]+)\]", beat) for x in group.split(",") if x.strip()]
             # the article itself, for a beat that rests on one: each article once, with GAP beats between them
-            src = next((shot_of[s] for cid in cited for s in by_id.get(cid, {}).get("sources", [])
-                        if s in shot_of and s not in used), None)
+            src, cid = next(((shot_of[s], cid) for cid in cited for s in by_id.get(cid, {}).get("sources", [])
+                             if s in shot_of and s not in used), (None, None))
             if src and since >= GAP:
                 used.add(src["id"])
+                cards.append((len(md), src, cid, by_id[cid].get("quotes", {}).get(str(src["id"]), "")))
                 pic, since = f"source: {src['shot']} | {src['site']} | {src.get('published', '')}", 0
             else:
                 since += 1
             md += [f"> {pic}", re.sub(r"\s*\[[\d,\s]+\]", "", beat)]
         md.append("")
+    marked = assets.quote_shots([(src, cid, q) for _, src, cid, q in cards], folder / "research" / "shots")
+    for at, src, cid, _ in cards:  # the card shows the marked words where the page has them
+        if (src["id"], cid) in marked:
+            md[at] = md[at].replace(src["shot"], str(marked[(src["id"], cid)]))
     (folder / "script.md").write_text("\n".join(md), encoding="utf-8")
     total = sum(len(l.split()) for l in md if l and not l.startswith(("#", ">", "card:", "visuals:", "thumb:")))
     print(f"  script: {total} words, about {total / SPOKEN:.1f} minutes, {len(used)} source screenshots in it", flush=True)

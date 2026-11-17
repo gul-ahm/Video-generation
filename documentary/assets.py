@@ -1,11 +1,18 @@
-"""Proof on screen: a screenshot of each article the script leans on, taken at its headline.
+"""Proof on screen: screenshots of the articles the script leans on, checked before they are used.
 
-A headless Chromium opens the page, closes the cookie banner if it finds one, hides bars that stick to the screen,
-scrolls to the headline and saves what a reader would see (1600 x 900). The film shows it as a source card with the
-outlet and date, which is how documentaries cite the press; photos are never lifted out of an article.
+A headless Chromium opens each page, closes the cookie banner if it finds one and hides bars that stick to the
+screen. Before anything is saved, the page the browser really got is checked against the text research read: a
+Cloudflare check, an "Access denied" wall or a captcha shares almost no words with the article, so it is refused.
+Earlier the text and the screenshot came from two different fetches, and a check page once reached the film.
+
+screenshots()  one verified shot per source at its headline (s<id>.png)
+quote_shots()  for each source card the script uses: the exact words the narration rests on, found on the page,
+               marked in yellow and scrolled to the middle of the screen (s<id>_c<claim>.png); when the words
+               cannot be found, the verified headline shot stays
+Photos are never lifted out of an article: the film shows the page as a source card with the outlet and date.
 """
+import re
 import time
-from pathlib import Path
 
 CLEAN = """
 () => {
@@ -23,46 +30,144 @@ CLEAN = """
 }
 """
 
+# finds the words on the page, lays a yellow mark over them and centres them; returns false when they are not there
+MARK = """
+(texts) => {
+  for (const t of texts) {
+    getSelection().removeAllRanges();
+    scrollTo(0, 0);
+    if (!window.find(t, false, false, true)) continue;
+    const range = getSelection().getRangeAt(0);
+    const box = range.getBoundingClientRect();
+    scrollTo(0, Math.max(0, box.top + scrollY - innerHeight / 2));
+    for (const r of range.getClientRects()) {
+      const m = document.createElement('div');
+      Object.assign(m.style, {position: 'absolute', left: (r.left + scrollX - 3) + 'px', top: (r.top + scrollY - 2) + 'px',
+        width: (r.width + 6) + 'px', height: (r.height + 4) + 'px', background: 'rgba(255, 214, 0, 0.45)',
+        borderRadius: '3px', zIndex: 2147483647, pointerEvents: 'none'});
+      document.body.appendChild(m);
+    }
+    getSelection().removeAllRanges();
+    return true;
+  }
+  return false;
+}
+"""
+
+
+def words(text):
+    return {w for w in re.findall(r"[a-z]{4,}", text.lower())}
+
+
+def genuine(page, source):
+    """Is the page on screen the article research read, and not a block, check or error page?"""
+    import research
+    seen = page.inner_text("body", timeout=5000)
+    article = words(" ".join(source["text"].split()[:3000]))
+    share = len(article & words(seen)) / max(1, len(article))
+    if share < 0.4 or (share < 0.7 and any(b in seen[:2000].lower() for b in research.BLOCKED)):
+        return False, f"page does not match the article ({share:.0%} of its words)"
+    return True, ""
+
+
+def opened(browser, url):
+    page = browser.new_page(viewport={"width": 1600, "height": 900})  # a fresh tab per page
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    except Exception as err:  # the Mac lost the network for a moment: wait and try once more
+        if "INTERNET_DISCONNECTED" not in str(err) and "NETWORK" not in str(err):
+            page.close()
+            raise
+        time.sleep(30)
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_timeout(2500)
+    return page
+
+
+def each(todo, work):
+    """Run work(browser, item) for every item, one tab each; a crashed browser is started again."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        for item in todo:
+            if not browser.is_connected():
+                browser = p.chromium.launch()
+            work(browser, item)
+        browser.close()
+
 
 def screenshots(sources, folder):
-    """<folder>/s<id>.png for every source that opens. Adds "shot" and the page's own headline to each source."""
-    from playwright.sync_api import sync_playwright
+    """<folder>/s<id>.png for every source whose page is genuine. Adds "shot" and the page's own headline."""
     folder.mkdir(parents=True, exist_ok=True)
-    todo = [s for s in sources if not (folder / f"s{s['id']:02d}.png").exists()]
+    refused = folder / "refused.txt"
+    skip = set(refused.read_text().split()) if refused.exists() else set()
+    todo = [s for s in sources if not (folder / f"s{s['id']:02d}.png").exists() and str(s["id"]) not in skip
+            and not s["url"].lower().endswith(".pdf")]
+
+    def work(browser, s):
+        try:
+            page = opened(browser, s["url"])
+        except Exception as err:
+            return print(f"  no screenshot of {s['site']} ({type(err).__name__}: {str(err).splitlines()[0][:80]})", flush=True)
+        try:
+            head = page.evaluate(CLEAN)
+            page.wait_for_timeout(700)
+            page.evaluate(CLEAN)
+            ok, why = genuine(page, s)
+            if not ok:
+                print(f"  refused {s['site']}: {why}", flush=True)
+                with refused.open("a") as f:
+                    f.write(f"{s['id']}\n")
+            elif head:  # no headline on screen means a wall or an error page, not worth showing
+                page.screenshot(path=str(folder / f"s{s['id']:02d}.png"))
+                s["headline"] = head
+        except Exception as err:
+            print(f"  no screenshot of {s['site']} ({type(err).__name__}: {str(err).splitlines()[0][:80]})", flush=True)
+        finally:
+            page.close()
+
     if todo:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            for s in todo:
-                if s["url"].lower().endswith(".pdf"):
-                    continue
-                if not browser.is_connected():  # one bad page can take the browser down; the rest still get shot
-                    browser = p.chromium.launch()
-                page = browser.new_page(viewport={"width": 1600, "height": 900})  # a fresh tab per page
-                try:
-                    try:
-                        page.goto(s["url"], wait_until="domcontentloaded", timeout=30000)
-                    except Exception as err:  # the Mac lost the network for a moment: wait and try once more
-                        if "INTERNET_DISCONNECTED" not in str(err) and "NETWORK" not in str(err):
-                            raise
-                        time.sleep(30)
-                        page.goto(s["url"], wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(2500)
-                    head = page.evaluate(CLEAN)
-                    page.wait_for_timeout(700)
-                    page.evaluate(CLEAN)
-                    if head:  # no headline on screen means a wall or an error page, not worth showing
-                        page.screenshot(path=str(folder / f"s{s['id']:02d}.png"))
-                        s["headline"] = head
-                except Exception as err:
-                    print(f"  no screenshot of {s['site']} ({type(err).__name__}: {str(err).splitlines()[0][:80]})", flush=True)
-                finally:
-                    try:
-                        page.close()
-                    except Exception:
-                        pass
-            browser.close()
+        each(todo, work)
     for s in sources:
         shot = folder / f"s{s['id']:02d}.png"
         s["shot"] = str(shot) if shot.exists() else ""
     print(f"  screenshots: {sum(bool(s['shot']) for s in sources)} of {len(sources)} sources", flush=True)
     return sources
+
+
+def quote_shots(wanted, folder):
+    """wanted: [(source, claim id, quote)]. Returns {(source id, claim id): path} for the quotes found and marked."""
+    out, todo = {}, []
+    for s, cid, quote in wanted:
+        path = folder / f"s{s['id']:02d}_c{cid}.png"
+        if path.exists():
+            out[(s["id"], cid)] = path
+        elif quote:
+            todo.append((s, cid, quote, path))
+
+    def work(browser, item):
+        s, cid, quote, path = item
+        w = quote.split()
+        texts = [t for t in dict.fromkeys([quote.strip() if len(quote) <= 160 else "", " ".join(w[:10]), " ".join(w[:6])])
+                 if t and len(t.split()) >= 4]
+        try:
+            page = opened(browser, s["url"])
+        except Exception:
+            return
+        try:
+            page.evaluate(CLEAN)
+            page.wait_for_timeout(700)
+            page.evaluate(CLEAN)
+            if genuine(page, s)[0] and page.evaluate(MARK, texts):
+                page.wait_for_timeout(400)
+                page.screenshot(path=str(path))
+                out[(s["id"], cid)] = path
+        except Exception:
+            pass
+        finally:
+            page.close()
+
+    if todo:
+        each(todo, work)
+    print(f"  quote marked on {len(out)} of {len(wanted)} source cards", flush=True)
+    return out

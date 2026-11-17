@@ -127,8 +127,14 @@ the code, so they are exact.
    marked confirmed (two or more sites), reported, alleged or disputed.
 4. **Script.** Chapters are written only from ledger claims, with a claim behind at least every second sentence.
    Allegations about real people stay worded as allegations.
-5. **Screenshots.** Playwright opens each source at 1600 x 900, clears cookie banners and takes the page at its
-   headline. When the narration rests on a source, its screenshot appears with the outlet name and date.
+5. **Screenshots.** Playwright opens each source at 1600 x 900 and clears cookie banners. Before saving anything it
+   checks that the page on screen is the article research read: a Cloudflare check, an "Access denied" wall or a
+   captcha shares almost none of the article's words and is refused. For every source card the script uses, the
+   exact words the narration rests on are found on the page, marked in yellow and scrolled into the middle.
+6. **Religious claims.** For stories from Islamic history, claims about the Prophet, the Sahaba or matters of faith
+   are kept only when they come from the Sunni books or sites in `documentary/sunni_books.json` (Sahih al-Bukhari,
+   Ibn Kathir, al-Tabari, Ibn Hisham and others). The script names the book when it tells such a claim. Battles,
+   numbers and places are researched on the open web as usual. `DOC_SUNNI=0` turns this off.
 
 On the Constantinople test this went from 29 sources and 85 claims in the first version to 118 sources from 89 sites,
 615 claims and 54 article screenshots in the film.
@@ -212,8 +218,6 @@ Real ESRGAN binary, and everything in `output/`. Bring your own voice, music and
 
 - **Faces in the realistic look.** AI photographs sometimes get faces and hands wrong. Real people are only shown from
   behind or far away, and their real photos appear only inside article screenshots.
-- **Blocked pages.** Some sites answer with a Cloudflare check. A check page once made it into a screenshot. The next
-  step is to OCR every screenshot, reject check pages, and highlight the exact quote on the page.
 - **Kaggle queues** can still delay a video by an hour or more on busy days.
 - **YouTube's API** keeps uploads from unverified projects private until the project passes an audit, so automatic
   publishing has to wait for that.
