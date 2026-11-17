@@ -1,7 +1,8 @@
 """The script of a documentary, written only from the claims ledger, and its picture list.
 
 Every chapter is given the claims it may use, with their status: a "confirmed" claim is told as fact, a "reported"
-one names who reported it, an "alleged" or "disputed" one is told as an allegation with both sides. The length is
+one names who reported it, an "alleged" or "disputed" one is told as an allegation with both sides. "Unverified"
+claims (one popular site, no historian behind them) are left out, so legends copied from blog to blog stay out. The length is
 held to the voice's real pace (188 words a minute): a chapter that comes back short is sent back for more.
 Pictures are literal: a beat that rests on an article shows that article's screenshot, with the very words the
 narration rests on marked in yellow when they can be found on the page; the others get a realistic scene of what the
@@ -41,8 +42,12 @@ names over general lines, and claims confirmed by several sources first.
 - confirmed: tell it as fact.
 - reported: say who reported it ("according to Reuters", "the filing shows").
 - alleged or disputed: say it is alleged, by whom, and what the other side answers. Never state it as fact.
+- unverified: only one popular source says it; leave it out unless the story cannot go on without it, and then say
+  "some accounts claim".
 - a claim marked with a Book: name the book when you tell it ("according to Sahih al-Bukhari", "Ibn Kathir
-  writes in al-Bidaya"), with respect for the Prophet and his Companions.
+  writes in al-Bidaya"), with respect for the Prophet and his Companions. If it also has Experts, say that
+  historians agree; if its Note shows they differ, give both views.
+- a claim marked with Experts may name them ("historian Steven Runciman writes", "Britannica notes").
 Plain spoken English, short sentences, present tension, no headings, no lists, no "in this video", no greeting.
 {extra}
 After a sentence that rests on a claim, put its number in square brackets, like [12]. One paragraph per idea,
@@ -73,6 +78,7 @@ Return JSON: {{"prompts": ["...", "..."]}} with exactly {n} prompts.
 def lines(claims, ids=None):
     return "\n".join(f"{c['id']}. ({c['status']}) {c['claim']}" + (f" [{c['date']}]" if c.get("date") else "")
                      + (f" Book: {', '.join(c['books'])}" if c.get("books") else "")
+                     + (f" Experts: {', '.join(c['experts'][:3])}" if c.get("experts") else "")
                      + (f" Note: {c['note']}" if c.get("note") else "")
                      for c in claims if ids is None or c["id"] in ids)
 
@@ -81,6 +87,8 @@ def script(title, minutes, claims, sources, folder):
     """script.md in the History Studio format, from the ledger."""
     parts = folder / "parts"
     parts.mkdir(parents=True, exist_ok=True)
+    sure = [c for c in claims if c["status"] != "unverified"]
+    claims = sure if len(sure) >= 150 else claims  # a thin ledger keeps them, marked unverified
     f = parts / "outline.json"
     n = max(5, round(minutes / 4))
     if not f.exists():

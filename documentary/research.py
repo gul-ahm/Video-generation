@@ -14,7 +14,12 @@
 5. Religious claims (the Prophet, the Sahaba, matters of faith) are kept only when their source is one of the Sunni
    books or sites in sunni_books.json, and they carry the book's name into the script. Everything else is researched
    on the open web as above. DOC_SUNNI=0 turns this off.
-6. A page that is a block or check page (Cloudflare "Just a moment", "Access denied", a captcha) is never a source.
+6. Every claim also records its experts: academic and reference sites (university presses, journals, .edu,
+   Britannica and the like) and named historians, scholars or chroniclers the source quotes. A claim on a single
+   popular site with no expert behind it is "unverified" and is kept out of the script, so a legend copied from blog
+   to blog does not become a fact. A religious claim keeps its Sunni book, and the historians' view of it when they
+   have one.
+7. A page that is a block or check page (Cloudflare "Just a moment", "Access denied", a captcha) is never a source.
 Everything is kept in <video>/research/: sources.json, claims.json and sources.md for a human to check.
 """
 import json
@@ -38,6 +43,11 @@ BLOCKED = ("just a moment", "checking your browser", "attention required", "acce
            "enable javascript and cookies", "are you a robot", "unusual traffic", "content unavailable",
            "page not found", "404 not found", "please enable cookies", "cloudflare ray id", "captcha",
            "subscribe to continue reading", "this site can't be reached")
+# academic and reference sources: a claim backed by one of them is not a blog's guess
+EXPERT_SITES = (".edu", ".ac.uk", ".ac.in", ".ac.jp", "cambridge.org", "oup.com", "jstor.org", "brill.com", "tandfonline.com",
+                "springer.com", "sciencedirect.com", "muse.jhu.edu", "persee.fr", "cairn.info", "academia.edu", "britannica.com",
+                "metmuseum.org", "bl.uk", "loc.gov", "doi.org", "dumbartonoaks.org", "iranicaonline.org", "islamansiklopedisi.org.tr")
+SCHOLAR = re.compile(r"\b(historian|professor|prof\.|scholar|dr\.|chronicler|imam|shaykh|sheikh|ibn \w+)\b", re.I)
 SKIP = ("youtube.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "pinterest.", "reddit.com",
         "quora.com", "linkedin.com")
 
@@ -192,7 +202,10 @@ def gather(title, minutes, folder):
     if plan.get("islamic") and os.getenv("DOC_SUNNI", "1") == "1":  # the Sunni books, searched by name
         subject = plan.get("subject") or title.split(":")[0]
         asks += [f"{subject} site:sunnah.com", f"{subject} Ibn Kathir al-Bidaya wa al-Nihaya", f"{subject} al-Tabari history",
-                 f"{subject} Ibn Hisham sirah", f"{subject} Ibn Sa'd Tabaqat", f"{subject} al-Dhahabi Siyar", f"{subject} site:archive.org"]
+                 f"{subject} Ibn Hisham sirah", f"{subject} Ibn Sa'd Tabaqat", f"{subject} al-Dhahabi Siyar", f"{subject} site:archive.org",
+                 f"{subject} Cambridge History of Islam", f"{subject} Encyclopaedia of Islam"]
+    subject = plan.get("subject") or title.split(":")[0]  # what historians themselves write
+    asks += [f"{subject} historian analysis", f"{subject} site:edu", f"{subject} journal article", f"{subject} Britannica"]
     for q in [title, *asks]:
         writer.say(f"searching: {q}")
         take(search(q))
@@ -257,7 +270,7 @@ def ledger(title, sources, folder):
         else:
             kept.append(c)
     merged = kept
-    by_source = {}
+    by_source, site_of = {}, {s["id"]: s["site"] for s in sources}
     for c in raw:
         by_source.setdefault(c["source"], []).append(c)
     for c in merged:  # the words each source uses for this claim: the screenshot highlights them
@@ -266,6 +279,9 @@ def ledger(title, sources, folder):
                 for i in c.get("sources", [])}
         c["quotes"] = {str(i): r["quote"] for i, r in best.items() if r}
         c["religious"] = any(r.get("religious") for r in best.values() if r)
+        c["experts"] = list(dict.fromkeys(
+            [site_of[i] for i in best if any(site_of.get(i, "").endswith(x) or x + "." in site_of.get(i, "") for x in EXPERT_SITES)]
+            + [r["said_by"] for r in best.values() if r and SCHOLAR.search(str(r.get("said_by", "")))]))
     dropped = sunni(merged, sources) if os.getenv("DOC_SUNNI", "1") == "1" else []
     merged = [c for c in merged if c not in dropped]
     where = {s["id"]: s["site"] for s in sources}
@@ -274,18 +290,22 @@ def ledger(title, sources, folder):
         sites = {where[i] for i in c["sources"]}
         c["id"] = n
         c["status"] = ("alleged" if c.get("allegation") else "disputed" if c.get("note") else
-                       "confirmed" if len(sites) >= 2 else "reported")
+                       "confirmed" if len(sites) >= 2 else
+                       "reported" if c.get("experts") or c.get("books") else "unverified")
     merged = [c for c in merged if c["sources"]]
     out.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
     (folder / "sources.json").write_text(json.dumps(sources, ensure_ascii=False, indent=1), encoding="utf-8")
     md = [f"# Sources for: {title}", "", f"{len(sources)} sources, {len(merged)} claims "
           f"({sum(c['status'] == 'confirmed' for c in merged)} confirmed by two or more sites, "
+          f"{sum(bool(c.get('experts')) for c in merged)} backed by historians or academic sources, "
+          f"{sum(c['status'] == 'unverified' for c in merged)} unverified (one popular site, kept out of the script), "
           f"{sum(bool(c.get('books')) for c in merged)} religious from the Sunni books, "
           f"{len(dropped)} religious claims dropped for want of a Sunni source).", ""]
     md += [f"{s['id']}. [{s['headline'] or s['site']}]({s['url']}) ({s['site']}{', ' + s['published'] if s.get('published') else ''})"
            for s in sources]
     md += ["", "## Claims", ""] + [f"- **{c['status']}** {c['claim']} [{', '.join(map(str, c['sources']))}]"
                                    + (f" Book: {', '.join(c['books'])}" if c.get("books") else "")
+                                   + (f" Experts: {', '.join(c['experts'])}" if c.get("experts") else "")
                                    + (f" Note: {c['note']}" if c.get("note") else "") for c in merged]
     if dropped:
         md += ["", "## Religious claims dropped (no Sunni book or site behind them)", ""]
