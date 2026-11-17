@@ -24,7 +24,7 @@ def kaggle():
 
 
 def push(stage, job):
-    """job: {"id", "title", "minutes", "style", "slug"}."""
+    """job: {"id", "title", "minutes", "style", "slug", "subject"}."""
     me, slug = user(), f"studio-{stage}"
     run = {**job, "stage": stage}
     with tempfile.TemporaryDirectory() as d:
@@ -43,6 +43,6 @@ def push(stage, job):
         raise SystemExit(f"kaggle push of {slug} failed")
 
 
-def job(title, minutes=22, style="documentary"):
+def job(title, minutes=22, style="documentary", subject=""):
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60]
-    return {"id": slug[:40], "title": title, "minutes": minutes, "style": style, "slug": slug}
+    return {"id": slug[:40], "title": title, "minutes": minutes, "style": style, "slug": slug, "subject": subject}

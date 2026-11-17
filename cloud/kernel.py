@@ -88,7 +88,7 @@ def state(direction):
 
 def work(stage):
     env = {**os.environ, "STYLE": RUN.get("style", "documentary"), "DOC_STYLE": RUN.get("style", "documentary")}
-    cmd = [sys.executable, "-u", "documentary/doc.py", RUN["title"], str(RUN["minutes"])]
+    cmd = [sys.executable, "-u", "documentary/doc.py", RUN["title"], str(RUN["minutes"]), RUN.get("subject", "")]
     if stage == "research":
         env["RESEARCH_ONLY"] = "1"
     if stage == "gpu":

@@ -27,3 +27,6 @@ fx/hf/.hyperframes/
 __pycache__/
 *.pyc
 .DS_Store
+
+# the channel plan stays private
+plan.json

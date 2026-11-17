@@ -4,6 +4,7 @@
   python cloud.py start "Title" [minutes]      start a video: research, then the GPU stage, then the render, each a
                                                Kaggle kernel that starts the next; the video arrives on Drive and Telegram
   python cloud.py start "Title" 22 gpu         start at a later stage, when the video folder is already on Drive
+  python cloud.py day 1                        start day 1 of the plan in plan.json (title, length and its event)
   python cloud.py send output/<folder>         put a folder made on the Mac on Drive, so a later stage can continue it
 
 Run sync again after changing the code, the voice, the music or a key.
@@ -76,6 +77,9 @@ if __name__ == "__main__":
         sync()
     elif args[:1] == ["send"] and len(args) == 2:
         send(args[1])
+    elif args[:1] == ["day"] and len(args) == 2:
+        d = next(x for x in json.loads((ROOT / "plan.json").read_text())["days"] if x["day"] == int(args[1]))
+        push.push("research", push.job(d["title"], d.get("minutes", 22), subject=d["subject"]))
     elif args[:1] == ["start"] and len(args) >= 2:
         push.push(args[3] if len(args) > 3 else "research", push.job(args[1], int(args[2]) if len(args) > 2 else 22))
     else:

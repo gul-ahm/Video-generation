@@ -1,6 +1,6 @@
 """Documentary maker: give a title or a headline, get a researched 20 to 25 minute film.
 
-    python documentary/doc.py "The title or headline" [minutes]
+    python documentary/doc.py "The title or headline" [minutes] ["the event it is about"]
 
 1. research.py   the open web is searched from about 40 angles in two rounds plus the Wikipedia references, up to
                  150 sources are read in full and every claim is checked against the source's own words and
@@ -53,4 +53,6 @@ def main(title, minutes=22):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(__doc__.strip())
+    if len(sys.argv) > 3:  # a headline like "3,000 vs 100,000: The 7-Day Stand..." needs its event named for research
+        os.environ["DOC_SUBJECT"] = sys.argv[3]
     main(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 22)

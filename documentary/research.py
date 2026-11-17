@@ -51,7 +51,7 @@ SCHOLAR = re.compile(r"\b(historian|professor|prof\.|scholar|dr\.|chronicler|ima
 SKIP = ("youtube.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "pinterest.", "reddit.com",
         "quora.com", "linkedin.com")
 
-QUESTIONS = """We are making a serious {minutes} minute documentary: "{title}".
+QUESTIONS = """We are making a serious {minutes} minute documentary: "{title}".{about}
 Write the web searches a careful researcher would run to cover it completely. {n} searches, each from a different
 angle: the background, the full timeline day by day, each main person, army or organisation, the key numbers, the
 weapons and tactics, the central dispute and each side of it, primary sources and eyewitness accounts, official
@@ -197,8 +197,11 @@ def gather(title, minutes, folder):
                                    "headline": r["title"] or head, "published": date, "words": len(text.split()),
                                    "text": text}
 
-    plan = writer.llm(QUESTIONS.format(title=title, minutes=minutes, n=24), as_json=True, temp=0.4)
-    asks = plan["searches"][:24]
+    known = os.getenv("DOC_SUBJECT", "")  # the event behind a headline that does not name it ("Battle of Mu'tah, 629")
+    about = f"\nIt is about: {known}. Every search must be about this event." if known else ""
+    plan = writer.llm(QUESTIONS.format(title=title, minutes=minutes, n=24, about=about), as_json=True, temp=0.4)
+    plan["subject"] = known or plan.get("subject")
+    asks = ([known] if known else []) + plan["searches"][:24]
     if plan.get("islamic") and os.getenv("DOC_SUNNI", "1") == "1":  # the Sunni books, searched by name
         subject = plan.get("subject") or title.split(":")[0]
         asks += [f"{subject} site:sunnah.com", f"{subject} Ibn Kathir al-Bidaya wa al-Nihaya", f"{subject} al-Tabari history",
@@ -210,7 +213,7 @@ def gather(title, minutes, folder):
         writer.say(f"searching: {q}")
         take(search(q))
     writer.say("wikipedia references")
-    take(wiki_refs(title)[:200])
+    take(wiki_refs(known or title)[:200])
     heads = "\n".join(f"- {s['headline']} ({s['site']})" for s in found.values())
     more = writer.llm(GAPS.format(title=title, found=heads, n=14), as_json=True, temp=0.5)["searches"][:14]
     for q in more:
