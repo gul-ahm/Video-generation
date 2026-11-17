@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-LIMIT = {"research": 3 * 3600, "gpu": 3 * 3600, "render": 4 * 3600}
+LIMIT = {"research": 3 * 3600, "gpu": 3 * 3600, "render": 9 * 3600}  # a render on 4 CPU cores took over 4 h
 
 
 def user():

@@ -66,7 +66,9 @@ def install(stage):
         node = HOME / "fx" / ".node"
         if not (node / "bin" / "node").exists():
             sh(f"mkdir -p {node} && curl -sL {NODE} | tar xJ --strip-components=1 -C {node}")
-        sh("apt-get install -y -q libnss3 libatk-bridge2.0-0 libgbm1 libxkbcommon0 libasound2 >/dev/null", check=False)
+        # every library a headless Chrome needs; with only a few of them the HyperFrames effects (marker, typewriter,
+        # number, slam) were all skipped
+        sh([sys.executable, "-m", "playwright", "install-deps", "chromium"], check=False)
         if sh([sys.executable, "fx.py", "setup"], cwd=HOME, check=False).returncode:
             with open(HOME / ".env", "a") as f:  # the film still renders, without the Remotion and HyperFrames effects
                 f.write("FX=0\n")
@@ -127,7 +129,25 @@ def work(stage):
         env["RESEARCH_ONLY"] = "1"
     if stage == "gpu":
         env["STOP_AFTER"] = "pictures"
-    sh(cmd, cwd=HOME, env=env)
+    print("$", " ".join(cmd), flush=True)
+    with subprocess.Popen(cmd, cwd=HOME, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                          bufsize=1) as p:
+        for line in p.stdout:
+            print(line, end="", flush=True)
+            progress(stage, line.strip())
+    if p.returncode:
+        raise subprocess.CalledProcessError(p.returncode, cmd)
+
+
+# the lines of a build that say how far it is, sent to Telegram as they come
+STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "render ", "done:")
+
+
+def progress(stage, line):
+    if line.startswith(STEPS) and ("took" in line or "done" in line or "drawn" in line or line.startswith(("screenshots:", "script:"))):
+        sys.path.insert(0, str(HOME / "cloud"))
+        import drive
+        drive.tell(f"{RUN['title'][:60]} ({stage}): {line[:200]}")
 
 
 def deliver():

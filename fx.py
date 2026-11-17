@@ -36,6 +36,7 @@ KINDS = {
     "storybook": {"open": ["book-flip", "iris"], "turn": ["zoom-blur", "clock-wipe"]},
     "default": {"open": ["film-burn", "iris"], "turn": ["zoom-blur", "clock-wipe"]},
 }
+SLOW_CPU = {"zoom-blur": "clock-wipe", "cross-zoom": "wipe", "film-burn": "iris"}
 SOUND = {"book-flip": "pageturn", "iris": "whoosh", "clock-wipe": "tick", "film-burn": "whoosh", "zoom-blur": "whip",
          "dreamy-zoom": "whoosh", "cross-zoom": "whip", "wipe": "whoosh", "fade": None}
 
@@ -303,6 +304,8 @@ def joins(segs, plan, tmp, quality):
         return segs, {}
     tmp = Path(tmp).resolve() / "fx"  # Remotion copies this folder into its bundle, so it holds only the short clips
     tmp.mkdir(exist_ok=True)
+    if os.getenv("CLOUD") == "1":  # on a CPU without a GPU these took 2 to 4 minutes each, and film-burn never loaded
+        plan = [{**p, "kinds": list(dict.fromkeys(SLOW_CPU.get(k, k) for k in p["kinds"]))} for p in plan]
     jobs = []
     for p in plan:
         i, f = p["at"], JOIN
