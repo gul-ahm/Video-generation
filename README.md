@@ -193,6 +193,20 @@ The most useful settings in `.env`:
 | `MUSIC_DB`, `SFX_DB`, `AMBIENCE_DB` | the sound mix |
 | `FX`, `FX_TITLES`, `FX_CAPTIONS` | Remotion and HyperFrames effects |
 
+## Running in the cloud (no computer on)
+
+`cloud/` runs the same pipeline as three private Kaggle kernels that start each other:
+
+1. **research** (CPU): web research, claims ledger, verified screenshots, script.
+2. **gpu** (2 x T4): the edit plan, the voice (Chatterbox on CUDA instead of MLX) and the pictures, drawn on the same
+   machine instead of a second kernel. Only this stage uses GPU hours.
+3. **render** (CPU): effects, sound, render, quality check and YouTube pack. The video goes to your Drive folder and
+   the link to Telegram with Yes and No buttons.
+
+Between stages the video folder travels through Drive as `job_<id>.tgz`. The code, the assets (voice, music, sound
+effects, fonts) and the secrets are three private Kaggle datasets that `python cloud.py sync` uploads from the Mac.
+`python cloud.py start "Title" 22` starts a video. A failure in any stage is sent to Telegram.
+
 ## What is in the folder
 
 | Path | What it is |

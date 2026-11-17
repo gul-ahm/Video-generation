@@ -260,6 +260,8 @@ def pictures(todo, moves):
 
     shutil.rmtree(WORK, ignore_errors=True)
     ref = f"{user()}/{SLUG}"
+    if os.getenv("KAGGLE_LOCAL") == "1":  # the build already runs on a Kaggle GPU (cloud/): draw right here
+        return local(jobs, where, settings)
     made, waiting = earlier(ref, jobs, where, settings)
     if not jobs:
         shutil.rmtree(WORK, ignore_errors=True)
@@ -322,6 +324,26 @@ def pictures(todo, moves):
         print(f"  kaggle: {drawn} of {len(where)} arrived, see output/kaggle_last.log")
     shutil.rmtree(WORK, ignore_errors=True)
     return made + drawn
+
+
+def local(jobs, where, settings):
+    """The same picture script, run on this machine's GPUs in its own process (its memory is freed when it ends)."""
+    got = (WORK / "got").resolve()
+    got.mkdir(parents=True, exist_ok=True)
+    script = WORK / "pictures.py"
+    code = SCRIPT.replace("__JOBS__", json.dumps(jobs)).replace("__SET__", json.dumps(settings))
+    script.write_text(code.replace('OUT = "/kaggle/working/out"', f'OUT = "{got}"'), encoding="utf-8")
+    print(f"  kaggle: {len(jobs)} pictures on this machine's GPUs", flush=True)
+    subprocess.run([sys.executable, "-u", str(script)], check=False)
+    files = {p.stem: p for p in got.rglob("*.png")}
+    drawn = 0
+    for jid, dst in where.items():
+        if jid in files:
+            arrive(got, files[jid], jid, dst)
+            drawn += 1
+    print(f"  kaggle: {drawn} of {len(where)} pictures drawn", flush=True)
+    shutil.rmtree(WORK, ignore_errors=True)
+    return drawn
 
 
 def arrive(got, png, jid, dst):

@@ -490,12 +490,19 @@ def build(folder):
     with ThreadPoolExecutor(2) as ex:
         planning = ex.submit(writer.edits, folder, s) if os.getenv("EDIT", "1") == "1" and os.getenv("LLM_API_KEY") else None
         get_plans = lambda: planning.result() if planning else [{}] * len(s["chapters"])
-        # the pictures need only the prompts and the moods, so Kaggle draws them while the Mac is still speaking
-        drawing = ex.submit(lambda: on_kaggle(s, get_plans(), folder))
-        voices = voice.narrate(s["chapters"], folder)
-        plans = get_plans()
-        drawing.result()
+        if os.getenv("CLOUD") == "1":  # on Kaggle the voice and the pictures share the GPUs, so one after the other
+            voices = voice.narrate(s["chapters"], folder)
+            plans = get_plans()
+            on_kaggle(s, plans, folder)
+        else:  # the pictures need only the prompts and the moods, so Kaggle draws them while the Mac is still speaking
+            drawing = ex.submit(lambda: on_kaggle(s, get_plans(), folder))
+            voices = voice.narrate(s["chapters"], folder)
+            plans = get_plans()
+            drawing.result()
     write_plan(folder, s, plans, voices)
+    if os.getenv("STOP_AFTER") == "pictures":  # the cloud GPU stage ends here; the render runs on a CPU machine
+        print(f"voice and pictures ready: {folder}", flush=True)
+        return
     laps = {"voice": time.time() - t0}
     (folder / "chapters").mkdir(exist_ok=True)
 
