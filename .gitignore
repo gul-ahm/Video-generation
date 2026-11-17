@@ -6,6 +6,7 @@ _ref/
 # secrets and local settings
 .env
 kaggle.json
+secrets/
 
 # personal voice and media that is not ours to share
 assets/*.wav
