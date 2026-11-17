@@ -53,7 +53,11 @@ class Cloudflare:
     def address(self):
         sub = requests.get(self.base + "/workers/subdomain", headers=self.auth, timeout=60).json().get("result") or {}
         if not sub.get("subdomain"):  # the account never had a workers.dev name
-            sub = self.call("PUT", "/workers/subdomain", json={"subdomain": f"gulzar-{secrets.token_hex(3)}"})
+            try:
+                sub = self.call("PUT", "/workers/subdomain", json={"subdomain": f"gulzar-{secrets.token_hex(3)}"})
+            except SystemExit as err:
+                raise SystemExit(f"{err}\nOpen dash.cloudflare.com, Workers & Pages, once: it makes the workers.dev "
+                                 "name. Then run this again.")
         self.call("POST", f"/workers/scripts/{NAME}/subdomain", json={"enabled": True, "previews_enabled": False})
         return f"https://{NAME}.{sub['subdomain']}.workers.dev"
 
@@ -85,8 +89,8 @@ def deploy():
         "metadata": (None, json.dumps(meta), "application/json"),
         "worker.js": ("worker.js", code, "application/javascript+module")})
     print("  worker: uploaded", flush=True)
+    url = cf.address()  # first: Cloudflare takes no timer before the account has its workers.dev name
     cf.call("PUT", f"/workers/scripts/{NAME}/schedules", json=[{"cron": TICK}])
-    url = cf.address()
     print(f"  worker: {url}, checks {TICK} (UTC)", flush=True)
 
     kv_files(cf, space)
