@@ -1,21 +1,23 @@
-"""One stage of a video on Kaggle. The same file runs every stage; push.py writes the stage and the job into RUN.
+"""One stage of a video on Kaggle. The same file runs every stage; the worker writes the stage and the job into RUN.
 
   research  (CPU)            web research, claims, article screenshots, script
   gpu       (2 x T4)         edit plan, your voice, the pictures
   part      (CPU, one each)  one chapter rendered with its effects and sound; all chapters render at the same time
-  join      (CPU)            the chapters put together, quality check, YouTube pack; the video goes to Drive and Telegram
-  render    (CPU)            all chapters one after another on one machine (the old way, over 4 hours)
+  join      (CPU)            the chapters put together, quality gate, YouTube pack; the film goes to Drive
 
-Each stage takes the video folder from Drive (job_<id>.tgz), does its part and pushes the next stage, so no computer
-of yours has to be on. Only the GPU stage uses GPU hours. A failure is sent to Telegram.
+Each stage takes the video folder from Drive (job_<id>.tgz), does its part and reports to the Cloudflare worker
+(cloud/cloudflare/worker.js), which pushes the next stage and writes to Telegram. A kernel never pushes another one:
+when they did, one broken Drive marker made every chapter push all six again. Only the GPU stage uses GPU hours.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import time
+from collections import deque
 from pathlib import Path
 
 RUN = json.loads(r"""__RUN__""")
@@ -48,7 +50,7 @@ def unpack():
     # IMAGE_ENGINE: a picture's file name comes from the engine, which follows the device; without it the CPU render
     # looked for other names than the GPU stage had drawn and found none of the 114 pictures
     extra = {"CLOUD": "1", "KAGGLE_LOCAL": "1", "KAGGLE": "1", "MAC_PICTURES": "0", "CHATTER_BACKEND": "torch",
-             "ASK_CLEAN": "0", "PREWRITE": "0", "IMAGE_ENGINE": "local"}
+             "ASK_CLEAN": "0", "PREWRITE": "0", "IMAGE_ENGINE": "local", "STRICT": "1"}
     lines = (HOME / "secrets" / "env.txt").read_text().splitlines()
     lines = [l for l in lines if l.split("=", 1)[0] not in extra] + [f"{k}={v}" for k, v in extra.items()]
     (HOME / ".env").write_text("\n".join(lines) + "\n")
@@ -63,7 +65,7 @@ def install(stage):
         sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"])
     if stage == "gpu":
         voice_model(pip)
-    if stage in ("part", "render"):
+    if stage == "part":
         node = HOME / "fx" / ".node"
         if not (node / "bin" / "node").exists():
             sh(f"mkdir -p {node} && curl -sL {NODE} | tar xJ --strip-components=1 -C {node}")
@@ -72,8 +74,8 @@ def install(stage):
         sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"])
         sh([sys.executable, "fx.py", "setup"], cwd=HOME)
         # a card is drawn here once, so a broken browser stops the run now instead of making a film without cards
-        sh([sys.executable, "-c", "import hf; p = hf.page(); p.set_content('<h1>ok</h1>'); p.close(); print('cards ok')"],
-           cwd=HOME)
+        sh([sys.executable, "-c", "import os, fx, hf; os.environ['STRICT'] = '1'; fx.ready(); p = hf.page(); "
+            "p.set_content('<h1>ok</h1>'); p.close(); print('effects and cards ok')"], cwd=HOME)
 
 
 def voice_model(pip):
@@ -125,6 +127,8 @@ def state(direction):
 
 
 def work(stage):
+    """documentary/doc.py for this stage. Its progress lines go to Telegram through the worker; when it fails, the
+    error carries its last lines, so the message says what broke instead of only "exit status 1"."""
     env = {**os.environ, "STYLE": RUN.get("style", "documentary"), "DOC_STYLE": RUN.get("style", "documentary")}
     cmd = [sys.executable, "-u", "documentary/doc.py", RUN["title"], str(RUN["minutes"]), RUN.get("subject", "")]
     if stage == "research":
@@ -134,171 +138,134 @@ def work(stage):
     if stage in ("part", "join"):
         env["RENDER_PART"] = str(RUN["part"]) if stage == "part" else "join"
     print("$", " ".join(cmd), flush=True)
+    tail = deque(maxlen=40)
     with subprocess.Popen(cmd, cwd=HOME, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                           bufsize=1) as p:
         for line in p.stdout:
             print(line, end="", flush=True)
-            progress(stage, line.strip())
+            tail.append(line.rstrip())
+            if line.strip().startswith(STEPS) and re.search(r"took|done|drawn|^screenshots:|^script:", line.strip()):
+                hook("progress", line=line.strip())
     if p.returncode:
-        raise subprocess.CalledProcessError(p.returncode, cmd)
+        said = [l for l in tail if l.strip() and not l.startswith(" " * 4)]
+        raise RuntimeError(" | ".join(said[-3:])[-400:] or f"doc.py exit {p.returncode}")
 
 
-# the lines of a build that say how far it is, sent to Telegram as they come
+# the lines of a build that say how far it is
 STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "render ", "done:")
 
+# a film below this is not offered for approval: the edit itself lost its cards, captions or timing
+NEEDED = ("time with caption or card", "full screen cards per minute", "longest still moment", "timing error",
+          "loudness", "music under the voice")
 
-def progress(stage, line):
-    if line.startswith(STEPS) and ("took" in line or "done" in line or "drawn" in line or line.startswith(("screenshots:", "script:"))):
-        sys.path.insert(0, str(HOME / "cloud"))
-        import drive
-        drive.tell(f"{RUN['title'][:60]} ({stage}): {line[:200]}")
+
+def quality(f):
+    """(summary, failed checks, the checks the gate needs that failed) from qa.md."""
+    qa = (f / "qa.md").read_text().splitlines() if (f / "qa.md").exists() else []
+    rows = [[c.strip() for c in l.split("|")[1:4]] for l in qa if l.count("|") >= 4 and (" ok" in l or " FIX" in l)]
+    fix = [f"{r[0]}: {r[1]} (target {r[2]})" for r in rows if r[1].endswith("FIX")]
+    return next((l for l in qa if "checks pass" in l), ""), fix, [x for x in fix if x.startswith(NEEDED)]
 
 
 def deliver():
-    """final.mp4 and its YouTube pack to Drive, and the link to Telegram with Yes and No."""
-    sys.path.insert(0, str(HOME / "cloud"))
+    """The join: the film and its YouTube pack to Drive, then the worker tells Telegram with Yes and No. A film that
+    fails the quality gate goes to Drive as _held and is reported instead, with what failed."""
     import drive
     f = folder()
-    _, link = drive.upload(f / "final.mp4", f"{RUN['slug']}.mp4")
+    summary, fix, blocking = quality(f)
+    if not summary:
+        raise RuntimeError("the quality check did not run (qa.md missing)")
+    name = f"{RUN['slug']}{'_held' if blocking else ''}.mp4"
+    _, link = drive.upload(f / "final.mp4", name)
     for extra in ("youtube_pack.json", "thumbnail.jpg", "subtitles.srt"):
         if (f / extra).exists():
             drive.upload(f / extra, f"{RUN['slug']}_{extra}")
+    if blocking:
+        raise Quality(f"quality gate: {summary}; " + "; ".join(blocking) + f". The film is on Drive to look at: {link}")
     pack = json.loads((f / "youtube_pack.json").read_text()) if (f / "youtube_pack.json").exists() else {}
     titles = pack.get("titles") or [{}]
     best = titles[pack.get("best", 0) if isinstance(pack.get("best"), int) else 0].get("title") or RUN["title"]
     check = f / "research" / "title_check.json"
-    check = json.loads(check.read_text()) if check.exists() else {}
-    warn = ("" if check.get("ok", True) else
-            f"\n\nTitle check: {'; '.join(check.get('problems', []))[:600]}\nSuggested title: {check.get('title')}")
-    qa = (f / "qa.md").read_text().splitlines() if (f / "qa.md").exists() else []
-    passed = next((l for l in qa if "checks pass" in l), "")
-    fix = [l.split("|")[1].strip() + ": " + l.split("|")[2].strip() for l in qa if " FIX " in l]
-    quality = f"\n\nQuality: {passed}" + "".join(f"\n- {x}" for x in fix) if passed else ""
-    hook("ready", link=link)
-    drive.tell(f"Video ready: {best}\n\nWatch: {link}{warn}{quality}\n\nCheck the screenshots and facts, then approve.",
-               [("Yes, publish", f"yes:{RUN['id']}"), ("No", f"no:{RUN['id']}")])
+    hook("ready", link=link, best=best, quality=summary, fix=fix,
+         title_check=json.loads(check.read_text()) if check.exists() else None)
+
+
+class Quality(Exception):
+    """A film made but not good enough to offer: reported, not run again (the same input gives the same film)."""
 
 
 def hook(event, **extra):
-    """Tell the Cloudflare worker (Telegram buttons, daily start) how the video is doing; quiet when it is not set up."""
-    sys.path.insert(0, str(HOME / "cloud"))
+    """Report to the worker, which decides everything else. Tried five times; the worker also notices a kernel that
+    ended without a word. Without the worker set up (secrets/worker.env), Telegram is told directly."""
     import drive
     import requests
     w = drive.env("worker")
+    body = {"event": event, "id": RUN["id"], "title": RUN["title"], "day": RUN.get("day"), "stage": RUN["stage"],
+            "part": RUN.get("part"), "nonce": RUN.get("nonce"), **extra}
     if not w.get("WORKER_URL"):
+        if event in ("failed", "ready"):
+            drive.tell(f"{RUN['title']} ({RUN['stage']}): {event} {extra.get('error') or extra.get('link', '')}")
         return
-    body = {"event": event, "id": RUN["id"], "title": RUN["title"], "day": RUN.get("day"), "stage": RUN["stage"], **extra}
-    try:
-        requests.post(f"{w['WORKER_URL']}/hook", json=body, headers={"X-Studio-Secret": w["HOOK_SECRET"]}, timeout=30)
-    except requests.RequestException:
-        pass
-
-
-def push(stage, **extra):
-    sys.path.insert(0, str(HOME / "cloud"))
-    import push as p
-    p.push(stage, {**RUN, **extra})
-
-
-def mark(name):
-    """An empty file on Drive that says something happened (a chapter pushed, the join pushed)."""
-    import drive
-    f = W / name
-    f.write_text("1")
-    drive.upload(f)
-    f.unlink()
-
-
-def parts(n):
-    """Push every chapter that nobody pushed yet, each to its own CPU machine. Kaggle may refuse some when too many
-    run at once; the chapters that finish push them later. Returns how many were pushed now."""
-    import drive
-    pushed = 0
-    for k in range(n):
-        if drive.find(f"job_{RUN['id']}_p{k}.pushed"):
-            continue
+    for wait in (0, 5, 15, 45, 120):
+        time.sleep(wait)
         try:
-            push("part", part=k, chapters=n)
-            mark(f"job_{RUN['id']}_p{k}.pushed")
-            pushed += 1
-        except (Exception, SystemExit) as err:
-            print(f"  chapter {k + 1} not pushed yet ({str(err)[:80]})", flush=True)
-    return pushed
+            r = requests.post(f"{w['WORKER_URL']}/hook", json=body, headers={"X-Studio-Secret": w["HOOK_SECRET"]},
+                              timeout=30)
+            if r.ok:
+                return
+        except requests.RequestException:
+            pass
+    print(f"  the worker did not answer the {event} report", flush=True)
+    if event in ("failed", "ready"):
+        drive.tell(f"{RUN['title']} ({RUN['stage']}): {event}, and the worker did not answer. "
+                   f"{extra.get('error') or extra.get('link', '')}"[:600])
 
 
 def chapters():
-    """How many chapters the voice has (one words file per chapter)."""
-    return len({p.name[:2] for p in (folder() / "audio").glob("*.words.json")})
-
-
-def part_done():
-    """This chapter's clip to Drive; the last chapter to finish pushes the join."""
-    import drive
-    k, n = RUN["part"], RUN["chapters"]
-    clip = max((folder() / "chapters").glob(f"{k:02d}_*.mp4"), key=os.path.getmtime)
-    drive.upload(clip, f"job_{RUN['id']}_ch{k}.mp4")
-    if drive.find(f"job_{RUN['id']}_p0.pushed"):  # only when the markers work: without them every chapter pushed all six again
-        parts(n)
-    if all(drive.find(f"job_{RUN['id']}_ch{j}.mp4") for j in range(n)) and not drive.find(f"job_{RUN['id']}_join"):
-        mark(f"job_{RUN['id']}_join")
-        push("join")
-        drive.tell(f"{RUN['title'][:60]}: all {n} chapters rendered, putting the film together")
-
-
-def join_get():
-    import drive
-    d = folder() / "chapters"
-    d.mkdir(exist_ok=True)
-    for k in range(RUN["chapters"]):
-        if not drive.download(f"job_{RUN['id']}_ch{k}.mp4", d / f"{k:02d}_cloud.mp4"):
-            raise SystemExit(f"chapter {k + 1} is not on Drive")
-
-
-def tidy():
-    """The chapter clips and markers go once the film is on Drive; job_<id>.tgz stays for a fix or a re-render."""
-    import drive
-    for k in range(RUN["chapters"]):
-        for name in (f"job_{RUN['id']}_ch{k}.mp4", f"job_{RUN['id']}_p{k}.pushed"):
-            drive.delete(name)
-    drive.delete(f"job_{RUN['id']}_join")
+    """How many chapters the film has: the script's chapter texts the edit plan was made from."""
+    n = len(list((folder() / "parts").glob("ch*.txt")))
+    if not n:
+        raise RuntimeError("no chapter texts in parts/, the edit plan is missing")
+    return n
 
 
 def main():
     stage, t0 = RUN["stage"], time.time()
     try:
         unpack()
+        sys.path.insert(0, str(HOME / "cloud"))
         hook("stage")
         install(stage)
-        sys.path.insert(0, str(HOME / "cloud"))
         if stage != "research":
             state("get")
         if stage == "join":
-            join_get()
+            d = folder() / "chapters"
+            d.mkdir(exist_ok=True)
+            import drive
+            for k in range(RUN["chapters"]):
+                for ext in ("mp4", "json"):
+                    if not drive.download(f"job_{RUN['id']}_ch{k}.{ext}", d / f"{k:02d}_cloud.{ext}"):
+                        raise RuntimeError(f"chapter {k + 1} ({ext}) is not on Drive")
         work(stage)
-        if stage == "research":
+        if stage in ("research", "gpu"):
             state("put")
-            push("gpu")
-        elif stage == "gpu":
-            state("put")
-            n = chapters()
-            if not parts(n):
-                raise SystemExit("Kaggle took none of the chapter renders")
+            hook("done", **({"chapters": chapters()} if stage == "gpu" else {}))
         elif stage == "part":
-            part_done()
-        else:  # join, or the old one machine render
+            import drive
+            k = RUN["part"]
+            clip = max((folder() / "chapters").glob(f"{k:02d}_*.mp4"), key=os.path.getmtime)
+            drive.upload(folder() / "chapters" / f"{k:02d}_plan.json", f"job_{RUN['id']}_ch{k}.json")
+            drive.upload(clip, f"job_{RUN['id']}_ch{k}.mp4")
+            hook("done")
+        else:
             deliver()
-            if stage == "join":
-                tidy()
-        hook("done", minutes=round((time.time() - t0) / 60))
         print(f"{stage} done in {(time.time() - t0) / 60:.0f} min", flush=True)
     except BaseException as err:
-        sys.path.insert(0, str(HOME / "cloud"))
         try:
-            import drive
-            drive.tell(f"History Studio: the {stage} stage of \"{RUN['title']}\" failed: {str(err)[:300]}")
-            hook("failed", error=str(err)[:300], run=RUN)
-        finally:
-            raise
+            hook("failed", error=str(err)[:400], kind="quality" if isinstance(err, Quality) else "error")
+        except Exception as lost:  # the failure came before the code was unpacked: the worker's watch notices it
+            print(f"  could not report the failure ({lost})", flush=True)
+        raise
 
 
 main()

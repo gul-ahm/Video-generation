@@ -94,6 +94,8 @@ def deploy():
     print(f"  worker: {url}, checks {TICK} (UTC)", flush=True)
 
     kv_files(cf, space)
+    import drive
+    drive.delete("STOP")  # the old brake for kernels that pushed each other; the worker's /pause does it now
     if cf.get(space, "state") is None:  # the first time: nothing starts by itself until you send /resume
         cf.put(space, "state", json.dumps({"next_day": 1, "paused": True, "running": None, "last_slot": None}))
 

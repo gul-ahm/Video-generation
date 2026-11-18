@@ -193,31 +193,48 @@ The most useful settings in `.env`:
 | `MUSIC_DB`, `SFX_DB`, `AMBIENCE_DB` | the sound mix |
 | `FX`, `FX_TITLES`, `FX_CAPTIONS` | Remotion and HyperFrames effects |
 
+## Tests
+
+```bash
+python -m unittest discover tests            # Drive uploads, the quality gate, kernel reports, the strict build
+node --test cloud/cloudflare/worker.test.mjs # the worker: a whole video, stale runs, a full Kaggle, lost kernels
+```
+
 ## Running in the cloud (no computer on)
 
-`cloud/` runs the same pipeline as private Kaggle kernels that start each other:
+`cloud/` runs the same pipeline as private Kaggle kernels. They never start each other: a small Cloudflare worker
+pushes every one of them and hears back from each.
 
 1. **research** (CPU): web research, claims ledger, verified screenshots, script.
 2. **gpu** (2 x T4): the edit plan, the voice (Chatterbox on CUDA instead of MLX) and the pictures, drawn on the same
    machine instead of a second kernel. Only this stage uses GPU hours.
 3. **part** (CPU, one machine per chapter): each chapter is rendered with its effects and sound on its own machine,
    all at the same time. One machine doing all six took over 4 hours; side by side it is about the time of one
-   chapter. A broken browser stops the stage at once instead of making a film without cards.
+   chapter. Each leaves its clip and its plan on Drive.
 4. **join** (CPU): the chapters put together, quality check and YouTube pack. The video goes to your Drive folder and
-   the link to Telegram with the quality result and Yes and No buttons.
+   the link to Telegram with the quality result and Yes and No buttons. A film that loses its cards, captions or
+   timing is not offered: it goes to Drive as `_held` and Telegram says which checks failed.
+
+In the cloud the build is strict (`STRICT=1`): a card, an effect, a transition or a picture that cannot be made stops
+the stage with its reason, instead of the film quietly coming out without it. Each machine also checks its browser
+and effects before it starts.
 
 Between stages the video folder travels through Drive as `job_<id>.tgz`. The code, the assets (voice, music, sound
 effects, fonts) and the secrets are three private Kaggle datasets that `python cloud.py sync` uploads from the Mac.
-`python cloud.py start "Title" 22` starts a video, `python cloud.py day 5` starts day 5 of `plan.json`. A failure in
-any stage is sent to Telegram.
+`python cloud.py day 5` starts day 5 of `plan.json`, `python cloud.py parts 5 6` finishes the chapters of day 5 that
+are not on Drive yet, `python cloud.py test` sends a 3 minute film through every stage.
 
 A small Cloudflare worker (`cloud/cloudflare/worker.js`, put up with `python cloud.py worker`) is the part that is
 always on:
 
-- **Starts videos by itself.** Every half hour it checks: when nothing is running and today's count (4 by default,
-  the day begins at 6:00 India time) is not reached, it pushes the research kernel for the next day of the plan
-  straight to Kaggle's API. One video at a time; none when the week's 30 Kaggle GPU hours are nearly used. A day that
-  fails twice is skipped and reported. It is turned on once with `/resume` and then runs until the plan is done.
+- **Runs every video.** It pushes research, then the GPU stage, then one machine per chapter (chapters Kaggle cannot
+  take yet wait for a free machine), then the join. Every push carries a fresh nonce and a report with any other
+  nonce is ignored, so a replaced run can neither start anything nor write to Telegram. Every half hour it also looks
+  at Kaggle: a kernel that ended without a word counts as failed. A failed stage runs once more; failing again, the
+  day is skipped and reported.
+- **Starts videos by itself.** When nothing is running and today's count (4 by default, the day begins at 6:00 India
+  time) is not reached, it starts the next day of the plan. One video at a time; none when the week's 30 Kaggle GPU
+  hours are nearly used. It is turned on once with `/resume` and then runs until the plan is done.
 - **Yes and No.** Every finished video comes to Telegram with its Drive link and the two buttons, one message per
   video. Yes approves it and gives it the next free publish slot: two a day, 11:00 AM and 5:30 PM New York. Four
   made a day fill two days of slots, so the rest wait for the next free day, and making never waits for a review.
@@ -227,7 +244,6 @@ always on:
   "No".
 - **Commands.** `/status`, `/next`, `/day N`, `/pause`, `/resume`, `/perday N`, `/starthour H`, `/undo` (takes
   back the last Yes).
-- **A failed stage runs once more** from where it stopped; failing again, the day is skipped and reported.
 
 The kernels report each stage, failure and finished video to the worker. Its state sits in Cloudflare KV.
 

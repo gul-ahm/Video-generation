@@ -446,11 +446,6 @@ def scenes(prompts, folder, poses=None):
     w, h = size()
     paths, todo, moves = pending(prompts, folder, poses)
     if (todo or moves) and os.getenv("MAC_PICTURES", "1") == "0":
-        if os.getenv("CLOUD") == "1" and len(todo) <= 0.1 * sum(map(bool, prompts)):
-            # the render machine has no GPU: a few missing pictures keep the picture before them, as a missing
-            # source card does, instead of losing the whole render
-            print(f"  {len(todo)} pictures missing, their beats keep the picture before", flush=True)
-            return [d if d and d.exists() else None for d in paths]
         raise SystemExit(f"{len(todo)} pictures and {len(moves)} pose frames did not come from Kaggle and drawing on "
                          "the Mac is off (MAC_PICTURES=0). Run the build again, finished pictures are kept.")
     if kind == "local" and (todo or moves):

@@ -55,14 +55,16 @@ def ready():
     if os.getenv("FX", "1") != "1":
         return False
     n = node()
-    if not n or not (ROOT / "node_modules" / "hyperframes").exists():
-        print("  fx off: run `python fx.py setup` once (needs Node 22 or newer)")
-        return False
-    major = int(subprocess.run([n, "-v"], capture_output=True, text=True).stdout.strip().lstrip("v").split(".")[0])
-    if major < 22:
-        print(f"  fx off: Node {major} is too old, HyperFrames needs 22 or newer")
-        return False
-    return True
+    why = ("" if n and (ROOT / "node_modules" / "hyperframes").exists() else
+           "run `python fx.py setup` once (needs Node 22 or newer)")
+    if not why:
+        major = int(subprocess.run([n, "-v"], capture_output=True, text=True).stdout.strip().lstrip("v").split(".")[0])
+        why = f"Node {major} is too old, HyperFrames needs 22 or newer" if major < 22 else ""
+    if why and os.getenv("STRICT") == "1":
+        raise SystemExit(f"effects are not set up: {why}")
+    if why:
+        print(f"  fx off: {why}")
+    return not why
 
 
 @lru_cache(1)
@@ -245,6 +247,8 @@ def frames(kind, values, out):
         (out / "done").write_text(str(dur))
         return out
     except Exception as err:
+        if os.getenv("STRICT") == "1":  # the cloud: an effect the edit asked for is not dropped quietly
+            raise SystemExit(f"effect {kind} could not be made: {str(err)[:200]}")
         print(f"  fx {kind} skipped ({str(err)[:120]})")
         return None
 
@@ -326,6 +330,9 @@ def joins(segs, plan, tmp, quality):
     failed_at = {j["at"] for j in jobs if j["kind"] == plan_first(plan, j) and j["out"] not in made}
     made |= remotion([{k: j[k] for k in ("id", "props", "out")} for j in retry if j["at"] in failed_at], tmp)
 
+    lost = [p["at"] for p in plan if not any(j["at"] == p["at"] and j["out"] in made for j in jobs)]
+    if lost and os.getenv("STRICT") == "1":
+        raise SystemExit(f"transitions at shots {lost} could not be made, nor their second choice")
     used, segs = {}, list(segs)
     for p in plan:
         i, f = p["at"], JOIN

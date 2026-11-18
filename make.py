@@ -32,6 +32,9 @@ import writer
 for key, value in visuals.STYLES.get(os.getenv("STYLE", ""), ("", "", {}))[2].items():
     os.environ[key] = value
 OUT = Path("output")
+# in the cloud nobody watches the log: a card, an effect or a picture that cannot be made stops the stage with its
+# reason (the worker runs it once more, then reports), instead of a film quietly made without it
+STRICT = os.getenv("STRICT") == "1"
 
 
 def folder_for(topic):
@@ -74,8 +77,8 @@ def card_spec(e, folder, pics):
         slots.update({k: str(pics[n % len(pics)]) for n, k in enumerate(hf.image_slots(e["card"]))} if pics else {})
         out = folder / "hf" / hashlib.md5(json.dumps([e["card"], slots], sort_keys=True).encode()).hexdigest()[:10]
         try:
-            hf.render(e["card"], slots, HF_SECONDS, out)
-        except Exception as err:  # no browser or a broken card: the words still show as a caption
+            card_frames(e["card"], slots, out)
+        except Exception as err:  # on the Mac the words still show as a caption; in the cloud the build stops
             print(f"  card {e['card']} skipped ({str(err)[:60]})")
             return {"kind": "caption", "title": writer.headline(e)}, None
         e = {"kind": "hf", "card": e["card"], "frames": str(out)}
@@ -131,6 +134,19 @@ def cut_in(shots, t, card, hold):
 _labels = {"n": 0}
 
 
+def card_frames(card, slots, out):
+    """A HyperFrames card's frames, tried twice: a busy machine can miss one browser start."""
+    try:
+        return hf.render(card, slots, HF_SECONDS, out)
+    except Exception:
+        try:
+            return hf.render(card, slots, HF_SECONDS, out)
+        except Exception as err:
+            if STRICT:
+                raise SystemExit(f"card {card} could not be drawn: {str(err)[:200]}")
+            raise
+
+
 def tier2(e, folder):
     """Every second caption becomes a HyperFrames tier2 card, so the lower third is not the same box all video: a
     name gets a lower third (tag, name, role), anything else a label (term, detail). Variants go in turn."""
@@ -146,8 +162,8 @@ def tier2(e, folder):
     slots = {"tag": "", "name": title, "role": sub} if is_name else {"term": title, "detail": sub}
     out = folder / "hf" / hashlib.md5(json.dumps([card, slots]).encode()).hexdigest()[:10]
     try:
-        hf.render(card, slots, HF_SECONDS, out)
-    except Exception as err:  # no browser: the plain caption still works
+        card_frames(card, slots, out)
+    except Exception as err:  # on the Mac the plain caption still works; in the cloud the build stops
         print(f"  card {card} skipped ({str(err)[:60]})")
         return e
     return {**e, "kind": "hfo", "card": card, "frames": str(out)}
@@ -241,6 +257,16 @@ def lit(ch, plan):
     return prompts
 
 
+def drawn(ch, plan):
+    """The prompt of every picture a chapter draws (None: no picture). Without real footage a clip line is drawn like
+    timeline() does; in the cloud the render machine has no GPU, so it is drawn with the rest and stays unused when
+    footage is found."""
+    clips = os.getenv("CLIPS", "1") == "1" and os.getenv("CLOUD") != "1"
+    prompts = [(None if clips else f"{p[5:].strip()}, showing: {shot[2][:150]}") if p and p.lower().startswith("clip:")
+               else p for p, shot in zip(lit(ch, plan), ch["shots"])]
+    return [None if p and p.lower().startswith("source:") else p for p in prompts]
+
+
 def on_kaggle(s, plans, folder):
     """Every picture of the video drawn in one Kaggle run while the Mac speaks; the chapters later find them done.
     A clip line may become real footage, so it stays with the Mac."""
@@ -248,18 +274,14 @@ def on_kaggle(s, plans, folder):
         return 0
     todo, moves = [], []
     for i, (ch, plan) in enumerate(zip(s["chapters"], plans)):
-        # without real footage a clip line is drawn like timeline() does; in the cloud the render machine has no GPU,
-        # so the picture is drawn here anyway and stays unused when footage is found
-        clips = os.getenv("CLIPS", "1") == "1" and os.getenv("CLOUD") != "1"
-        prompts = [(None if clips else f"{p[5:].strip()}, showing: {shot[2][:150]}") if p and p.lower().startswith("clip:")
-                   else p for p, shot in zip(lit(ch, plan), ch["shots"])]
-        prompts = [None if p and p.lower().startswith("source:") else p for p in prompts]
         poses = [x[3] if os.getenv("POSES", "1") == "1" else [] for x in ch["shots"]]
-        _, t, m = visuals.pending(prompts, folder / "img" / f"{i:02d}", poses)
+        _, t, m = visuals.pending(drawn(ch, plan), folder / "img" / f"{i:02d}", poses)
         todo, moves = todo + t, moves + m
     try:
         return kaggle_gpu.pictures(todo, moves)
     except (Exception, SystemExit) as err:  # Kaggle down or the account not set up: the Mac draws them as before
+        if STRICT:
+            raise
         print(f"  kaggle: skipped ({str(err)[:120]}), pictures stay on the Mac")
         return 0
 
@@ -510,27 +532,22 @@ def build(folder):
     # in the cloud every chapter renders on its own machine at the same time: RENDER_PART=<n> renders only chapter n,
     # RENDER_PART=join takes the chapters already made and puts the film together
     part = os.getenv("RENDER_PART")
-    pictures = {}
 
     def finish(i, shots, mix, audio, dur, words):
         """Sound and render of one chapter, run while the next chapter's pictures are drawn."""
-        if part == "join":
-            made = sorted((folder / "chapters").glob(f"{i:02d}_*.mp4"), key=os.path.getmtime)
-            if not made:
-                raise SystemExit(f"chapter {i + 1} was not rendered")
-            return made[-1], (shots, mix)
-        if part is not None and int(part) != i:
-            return None, (shots, mix)
         made = [os.path.getmtime(x[0]) for x in shots]  # a redrawn picture means a new chapter clip
         key = hashlib.md5(f"{shots}{made}{mix}{audio}{os.getenv('HEIGHT')}".encode()).hexdigest()[:8]
         out = folder / "chapters" / f"{i:02d}_{key}.mp4"
         # chapters render in order, so the last frame of the one before is there for the page flip
         hold, last = folder / "chapters" / f"{i - 1:02d}_last.png", folder / "chapters" / f"{i:02d}_last.png"
-        if part is not None and i and not hold.exists() and pictures.get(i - 1):
+        if part is not None and i and not hold.exists():
             # rendered side by side, the chapter before is not done yet: its last picture stands in for its last frame
-            w, h = visuals.size()
-            render.ffmpeg("-i", pictures[i - 1], "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
-                          "-frames:v", 1, hold)
+            ch, plan = s["chapters"][i - 1], plans[i - 1]
+            before = [x for x in visuals.pending(drawn(ch, plan), folder / "img" / f"{i - 1:02d}")[0] if x and x.exists()]
+            if before:
+                w, h = visuals.size()
+                render.ffmpeg("-i", before[-1], "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
+                              "-frames:v", 1, hold)
         edge = {"hold": hold if i else None, "last": last}
         if os.getenv("SOUND", "1") == "0":
             render.chapter(shots, audio, dur, words, out, **edge)
@@ -543,18 +560,30 @@ def build(folder):
         print(f"  render {i + 1}/{len(voices)} done", flush=True)
         return out, (shots, mix)
 
-    credits, cover, jobs = [], None, []
-    with ThreadPoolExecutor(1) as ex:
-        for i, (ch, (audio, dur, words)) in enumerate(zip(s["chapters"], voices)):
-            print(f"  visuals {i + 1}/{len(voices)}: {dur / 60:.1f} min", flush=True)
-            shots, cr, mix = timeline(ch, dur, words, folder / "img" / f"{i:02d}", plans[i], first=i == 0)
-            pictures[i] = next((str(x[0]) for x in reversed(shots) if x[0].suffix == ".jpg"), None)
-            cover = cover or next((x[0] for x in shots if x[0].suffix == ".jpg"), None)
-            credits += [c for c in cr if c not in credits]
-            jobs.append(ex.submit(finish, i, shots, mix, audio, dur, words))
-        visuals.release()
-        laps["visuals"] = time.time() - t0 - sum(laps.values())
-        done = [j.result() for j in jobs]
+    credits, cover, jobs, done = [], None, [], []
+    if part == "join":  # each chapter machine left its clip and its plan; nothing is drawn or rendered again
+        for i in range(len(voices)):
+            got = json.loads((folder / "chapters" / f"{i:02d}_cloud.json").read_text(encoding="utf-8"))
+            shots = [(Path(x[0]), *x[1:]) for x in got["shots"]]
+            cover = cover or (Path(got["cover"]) if got["cover"] else None)
+            credits += [c for c in got["credits"] if c not in credits]
+            done.append((folder / "chapters" / f"{i:02d}_cloud.mp4", (shots, got["mix"])))
+    else:
+        with ThreadPoolExecutor(1) as ex:
+            for i, (ch, (audio, dur, words)) in enumerate(zip(s["chapters"], voices)):
+                if part is not None and int(part) != i:
+                    continue
+                print(f"  visuals {i + 1}/{len(voices)}: {dur / 60:.1f} min", flush=True)
+                shots, cr, mix = timeline(ch, dur, words, folder / "img" / f"{i:02d}", plans[i], first=i == 0)
+                cover = cover or next((x[0] for x in shots if x[0].suffix == ".jpg"), None)
+                credits += [c for c in cr if c not in credits]
+                jobs.append(ex.submit(finish, i, shots, mix, audio, dur, words))
+                if part is not None:  # what the join needs from this chapter, next to its clip
+                    (folder / "chapters" / f"{i:02d}_plan.json").write_text(json.dumps(
+                        {"shots": shots, "mix": mix, "credits": cr, "cover": cover}, default=str), encoding="utf-8")
+            visuals.release()
+            laps["visuals"] = time.time() - t0 - sum(laps.values())
+            done = [j.result() for j in jobs]
     if part not in (None, "join"):
         print(f"chapter {int(part) + 1} rendered", flush=True)
         return
