@@ -1,11 +1,13 @@
-"""One stage of a video on Kaggle. The same file runs all three stages; push.py writes the stage and the job into RUN.
+"""One stage of a video on Kaggle. The same file runs every stage; push.py writes the stage and the job into RUN.
 
-  research  (CPU)       web research, claims, article screenshots, script
-  gpu       (2 x T4)    edit plan, your voice, the pictures
-  render    (CPU)       effects, sound, render, quality check, YouTube pack; the video goes to Drive and Telegram
+  research  (CPU)            web research, claims, article screenshots, script
+  gpu       (2 x T4)         edit plan, your voice, the pictures
+  part      (CPU, one each)  one chapter rendered with its effects and sound; all chapters render at the same time
+  join      (CPU)            the chapters put together, quality check, YouTube pack; the video goes to Drive and Telegram
+  render    (CPU)            all chapters one after another on one machine (the old way, over 4 hours)
 
-Each stage takes the video folder from Drive (job_<id>.tgz), does its part, puts it back and pushes the next stage,
-so no computer of yours has to be on. Only the GPU stage uses GPU hours. A failure is sent to Telegram.
+Each stage takes the video folder from Drive (job_<id>.tgz), does its part and pushes the next stage, so no computer
+of yours has to be on. Only the GPU stage uses GPU hours. A failure is sent to Telegram.
 """
 import json
 import os
@@ -21,7 +23,6 @@ RUN = json.loads(r"""__RUN__""")
 # download when something has to be checked (from /kaggle/working it was the whole studio, 25 minutes to fetch)
 W = Path("/kaggle/temp")
 HOME = W / "studio"
-NEXT = {"research": "gpu", "gpu": "render", "render": None}
 NODE = "https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz"
 
 
@@ -62,16 +63,17 @@ def install(stage):
         sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"])
     if stage == "gpu":
         voice_model(pip)
-    if stage == "render":
+    if stage in ("part", "render"):
         node = HOME / "fx" / ".node"
         if not (node / "bin" / "node").exists():
             sh(f"mkdir -p {node} && curl -sL {NODE} | tar xJ --strip-components=1 -C {node}")
-        # every library a headless Chrome needs; with only a few of them the HyperFrames effects (marker, typewriter,
-        # number, slam) were all skipped
-        sh([sys.executable, "-m", "playwright", "install-deps", "chromium"], check=False)
-        if sh([sys.executable, "fx.py", "setup"], cwd=HOME, check=False).returncode:
-            with open(HOME / ".env", "a") as f:  # the film still renders, without the Remotion and HyperFrames effects
-                f.write("FX=0\n")
+        # Chrome and every library it needs: the cards (titles, stats, labels) and the HyperFrames effects use it.
+        # Missing, they were skipped one by one and the film came out with a tenth of its cards.
+        sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"])
+        sh([sys.executable, "fx.py", "setup"], cwd=HOME)
+        # a card is drawn here once, so a broken browser stops the run now instead of making a film without cards
+        sh([sys.executable, "-c", "import hf; p = hf.page(); p.set_content('<h1>ok</h1>'); p.close(); print('cards ok')"],
+           cwd=HOME)
 
 
 def voice_model(pip):
@@ -129,6 +131,8 @@ def work(stage):
         env["RESEARCH_ONLY"] = "1"
     if stage == "gpu":
         env["STOP_AFTER"] = "pictures"
+    if stage in ("part", "join"):
+        env["RENDER_PART"] = str(RUN["part"]) if stage == "part" else "join"
     print("$", " ".join(cmd), flush=True)
     with subprocess.Popen(cmd, cwd=HOME, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                           bufsize=1) as p:
@@ -166,8 +170,12 @@ def deliver():
     check = json.loads(check.read_text()) if check.exists() else {}
     warn = ("" if check.get("ok", True) else
             f"\n\nTitle check: {'; '.join(check.get('problems', []))[:600]}\nSuggested title: {check.get('title')}")
+    qa = (f / "qa.md").read_text().splitlines() if (f / "qa.md").exists() else []
+    passed = next((l for l in qa if "checks pass" in l), "")
+    fix = [l.split("|")[1].strip() + ": " + l.split("|")[2].strip() for l in qa if " FIX " in l]
+    quality = f"\n\nQuality: {passed}" + "".join(f"\n- {x}" for x in fix) if passed else ""
     hook("ready", link=link)
-    drive.tell(f"Video ready: {best}\n\nWatch: {link}{warn}\n\nCheck the screenshots and facts, then approve.",
+    drive.tell(f"Video ready: {best}\n\nWatch: {link}{warn}{quality}\n\nCheck the screenshots and facts, then approve.",
                [("Yes, publish", f"yes:{RUN['id']}"), ("No", f"no:{RUN['id']}")])
 
 
@@ -186,10 +194,72 @@ def hook(event, **extra):
         pass
 
 
-def push(stage):
+def push(stage, **extra):
     sys.path.insert(0, str(HOME / "cloud"))
     import push as p
-    p.push(stage, RUN)
+    p.push(stage, {**RUN, **extra})
+
+
+def mark(name):
+    """An empty file on Drive that says something happened (a chapter pushed, the join pushed)."""
+    import drive
+    f = W / name
+    f.write_text("")
+    drive.upload(f)
+    f.unlink()
+
+
+def parts(n):
+    """Push every chapter that nobody pushed yet, each to its own CPU machine. Kaggle may refuse some when too many
+    run at once; the chapters that finish push them later. Returns how many were pushed now."""
+    import drive
+    pushed = 0
+    for k in range(n):
+        if drive.find(f"job_{RUN['id']}_p{k}.pushed"):
+            continue
+        try:
+            push("part", part=k, chapters=n)
+            mark(f"job_{RUN['id']}_p{k}.pushed")
+            pushed += 1
+        except (Exception, SystemExit) as err:
+            print(f"  chapter {k + 1} not pushed yet ({str(err)[:80]})", flush=True)
+    return pushed
+
+
+def chapters():
+    """How many chapters the voice has (one words file per chapter)."""
+    return len({p.name[:2] for p in (folder() / "audio").glob("*.words.json")})
+
+
+def part_done():
+    """This chapter's clip to Drive; the last chapter to finish pushes the join."""
+    import drive
+    k, n = RUN["part"], RUN["chapters"]
+    clip = max((folder() / "chapters").glob(f"{k:02d}_*.mp4"), key=os.path.getmtime)
+    drive.upload(clip, f"job_{RUN['id']}_ch{k}.mp4")
+    parts(n)
+    if all(drive.find(f"job_{RUN['id']}_ch{j}.mp4") for j in range(n)) and not drive.find(f"job_{RUN['id']}_join"):
+        mark(f"job_{RUN['id']}_join")
+        push("join")
+        drive.tell(f"{RUN['title'][:60]}: all {n} chapters rendered, putting the film together")
+
+
+def join_get():
+    import drive
+    d = folder() / "chapters"
+    d.mkdir(exist_ok=True)
+    for k in range(RUN["chapters"]):
+        if not drive.download(f"job_{RUN['id']}_ch{k}.mp4", d / f"{k:02d}_cloud.mp4"):
+            raise SystemExit(f"chapter {k + 1} is not on Drive")
+
+
+def tidy():
+    """The chapter clips and markers go once the film is on Drive; job_<id>.tgz stays for a fix or a re-render."""
+    import drive
+    for k in range(RUN["chapters"]):
+        for name in (f"job_{RUN['id']}_ch{k}.mp4", f"job_{RUN['id']}_p{k}.pushed"):
+            drive.delete(name)
+    drive.delete(f"job_{RUN['id']}_join")
 
 
 def main():
@@ -198,16 +268,26 @@ def main():
         unpack()
         hook("stage")
         install(stage)
+        sys.path.insert(0, str(HOME / "cloud"))
         if stage != "research":
             state("get")
+        if stage == "join":
+            join_get()
         work(stage)
-        if stage == "render":
-            deliver()
-            import drive
-            drive.delete(f"job_{RUN['id']}.tgz")
-        else:
+        if stage == "research":
             state("put")
-            push(NEXT[stage])
+            push("gpu")
+        elif stage == "gpu":
+            state("put")
+            n = chapters()
+            if not parts(n):
+                raise SystemExit("Kaggle took none of the chapter renders")
+        elif stage == "part":
+            part_done()
+        else:  # join, or the old one machine render
+            deliver()
+            if stage == "join":
+                tidy()
         hook("done", minutes=round((time.time() - t0) / 60))
         print(f"{stage} done in {(time.time() - t0) / 60:.0f} min", flush=True)
     except BaseException as err:
@@ -215,7 +295,7 @@ def main():
         try:
             import drive
             drive.tell(f"History Studio: the {stage} stage of \"{RUN['title']}\" failed: {str(err)[:300]}")
-            hook("failed", error=str(err)[:300])
+            hook("failed", error=str(err)[:300], run=RUN)
         finally:
             raise
 

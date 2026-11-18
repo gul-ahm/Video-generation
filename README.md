@@ -195,13 +195,16 @@ The most useful settings in `.env`:
 
 ## Running in the cloud (no computer on)
 
-`cloud/` runs the same pipeline as three private Kaggle kernels that start each other:
+`cloud/` runs the same pipeline as private Kaggle kernels that start each other:
 
 1. **research** (CPU): web research, claims ledger, verified screenshots, script.
 2. **gpu** (2 x T4): the edit plan, the voice (Chatterbox on CUDA instead of MLX) and the pictures, drawn on the same
    machine instead of a second kernel. Only this stage uses GPU hours.
-3. **render** (CPU): effects, sound, render, quality check and YouTube pack. The video goes to your Drive folder and
-   the link to Telegram with Yes and No buttons.
+3. **part** (CPU, one machine per chapter): each chapter is rendered with its effects and sound on its own machine,
+   all at the same time. One machine doing all six took over 4 hours; side by side it is about the time of one
+   chapter. A broken browser stops the stage at once instead of making a film without cards.
+4. **join** (CPU): the chapters put together, quality check and YouTube pack. The video goes to your Drive folder and
+   the link to Telegram with the quality result and Yes and No buttons.
 
 Between stages the video folder travels through Drive as `job_<id>.tgz`. The code, the assets (voice, music, sound
 effects, fonts) and the secrets are three private Kaggle datasets that `python cloud.py sync` uploads from the Mac.
@@ -215,7 +218,6 @@ always on:
   the day begins at 6:00 India time) is not reached, it pushes the research kernel for the next day of the plan
   straight to Kaggle's API. One video at a time; none when the week's 30 Kaggle GPU hours are nearly used. A day that
   fails twice is skipped and reported. It is turned on once with `/resume` and then runs until the plan is done.
-- **Drive stays small.** The job folder is removed from Drive once the video is made.
 - **Yes and No.** Every finished video comes to Telegram with its Drive link and the two buttons, one message per
   video. Yes approves it and gives it the next free publish slot: two a day, 11:00 AM and 5:30 PM New York. Four
   made a day fill two days of slots, so the rest wait for the next free day, and making never waits for a review.
@@ -223,7 +225,9 @@ always on:
 - **Upload settings.** `/settings` asks each setting once with its options (visibility, category, audience, license,
   comments and so on). The studio only writes the title, description, hashtags and captions. Paid promotion and AI use are always
   "No".
-- **Commands.** `/status`, `/next`, `/day N`, `/pause`, `/resume`, `/perday N`, `/starthour H`.
+- **Commands.** `/status`, `/next`, `/day N`, `/pause`, `/resume`, `/perday N`, `/starthour H`, `/undo` (takes
+  back the last Yes).
+- **A failed stage runs once more** from where it stopped; failing again, the day is skipped and reported.
 
 The kernels report each stage, failure and finished video to the worker. Its state sits in Cloudflare KV.
 

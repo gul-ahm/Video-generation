@@ -507,14 +507,30 @@ def build(folder):
         return
     laps = {"voice": time.time() - t0}
     (folder / "chapters").mkdir(exist_ok=True)
+    # in the cloud every chapter renders on its own machine at the same time: RENDER_PART=<n> renders only chapter n,
+    # RENDER_PART=join takes the chapters already made and puts the film together
+    part = os.getenv("RENDER_PART")
+    pictures = {}
 
     def finish(i, shots, mix, audio, dur, words):
         """Sound and render of one chapter, run while the next chapter's pictures are drawn."""
+        if part == "join":
+            made = sorted((folder / "chapters").glob(f"{i:02d}_*.mp4"), key=os.path.getmtime)
+            if not made:
+                raise SystemExit(f"chapter {i + 1} was not rendered")
+            return made[-1], (shots, mix)
+        if part is not None and int(part) != i:
+            return None, (shots, mix)
         made = [os.path.getmtime(x[0]) for x in shots]  # a redrawn picture means a new chapter clip
         key = hashlib.md5(f"{shots}{made}{mix}{audio}{os.getenv('HEIGHT')}".encode()).hexdigest()[:8]
         out = folder / "chapters" / f"{i:02d}_{key}.mp4"
         # chapters render in order, so the last frame of the one before is there for the page flip
         hold, last = folder / "chapters" / f"{i - 1:02d}_last.png", folder / "chapters" / f"{i:02d}_last.png"
+        if part is not None and i and not hold.exists() and pictures.get(i - 1):
+            # rendered side by side, the chapter before is not done yet: its last picture stands in for its last frame
+            w, h = visuals.size()
+            render.ffmpeg("-i", pictures[i - 1], "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
+                          "-frames:v", 1, hold)
         edge = {"hold": hold if i else None, "last": last}
         if os.getenv("SOUND", "1") == "0":
             render.chapter(shots, audio, dur, words, out, **edge)
@@ -532,12 +548,16 @@ def build(folder):
         for i, (ch, (audio, dur, words)) in enumerate(zip(s["chapters"], voices)):
             print(f"  visuals {i + 1}/{len(voices)}: {dur / 60:.1f} min", flush=True)
             shots, cr, mix = timeline(ch, dur, words, folder / "img" / f"{i:02d}", plans[i], first=i == 0)
+            pictures[i] = next((str(x[0]) for x in reversed(shots) if x[0].suffix == ".jpg"), None)
             cover = cover or next((x[0] for x in shots if x[0].suffix == ".jpg"), None)
             credits += [c for c in cr if c not in credits]
             jobs.append(ex.submit(finish, i, shots, mix, audio, dur, words))
         visuals.release()
         laps["visuals"] = time.time() - t0 - sum(laps.values())
         done = [j.result() for j in jobs]
+    if part not in (None, "join"):
+        print(f"chapter {int(part) + 1} rendered", flush=True)
+        return
     clips = [c for c, _ in done]
     starts = list(accumulate((dur + render.PAD for _, dur, _ in voices[:-1]), initial=0.0))
     t = starts[-1] + voices[-1][1] + render.PAD

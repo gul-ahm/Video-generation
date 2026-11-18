@@ -36,7 +36,8 @@ const HELP = `History Studio
 /day N  start day N now
 /pause  stop the automatic start, /resume  start it again (/resume 2 goes on from day 2)
 /perday N  videos a day (now 4), /starthour H  when the day's videos begin, India time (now 6)
-/settings  choose the upload settings (/settings reset to choose again)`;
+/settings  choose the upload settings (/settings reset to choose again)
+/undo  take back the last Yes`;
 
 export default {
   async fetch(req, env) {
@@ -156,12 +157,14 @@ async function kagglePush(env, run) {
   const code = await env.KV.get("kernel");
   if (!code) throw new Error("kernel.py is not in KV, run: python cloud.py worker");
   const me = env.KAGGLE_USERNAME;
+  const name = run.stage === "part" ? `studio-render-${run.part}` : `studio-${run.stage}`;
+  const gpu = run.stage === "gpu";
   const body = {
-    slug: `${me}/studio-research`, newTitle: "studio-research", text: code.replace("__RUN__", JSON.stringify(run)),
-    language: "python", kernelType: "script", isPrivate: true, enableGpu: false, enableTpu: false, enableInternet: true,
+    slug: `${me}/${name}`, newTitle: name, text: code.replace("__RUN__", JSON.stringify(run)),
+    language: "python", kernelType: "script", isPrivate: true, enableGpu: gpu, enableTpu: false, enableInternet: true,
     datasetDataSources: ["code", "assets", "secrets"].map((x) => `${me}/history-studio-${x}`),
     competitionDataSources: [], kernelDataSources: [], modelDataSources: [], categoryIds: [],
-    sessionTimeoutSeconds: 3 * 3600,
+    sessionTimeoutSeconds: ({ join: 2, render: 9 }[run.stage] || 3) * 3600, ...(gpu ? { machineShape: "NvidiaTeslaT4" } : {}),
   };
   const auth = "Basic " + btoa(`${me}:${env.KAGGLE_KEY}`);
   const r = await fetch("https://www.kaggle.com/api/v1/kernels/push", {
@@ -189,9 +192,22 @@ async function hook(e, env) {
     delete s.gpu_start[e.id];
   }
   if (e.event === "failed") {
-    Object.assign(job, { status: "failed", stage: e.stage, error: e.error });
-    if (mine) s.running = null;
-    if (job.day) await say(env, `Day ${job.day}: ${failedDay(s, job.day)}`);
+    // a failed stage runs once more from where it stopped (its folder is on Drive); failing again, the day is skipped
+    const key = `${e.stage}${e.run?.part ?? ""}`;
+    job.retries = { ...(job.retries || {}), [key]: (job.retries?.[key] || 0) + 1 };
+    const again = e.run && job.retries[key] === 1 &&
+      (await kagglePush(env, e.run).then(() => true).catch(() => false));
+    if (again) {
+      Object.assign(job, { status: "running", stage: e.stage });
+      await say(env, `Day ${job.day ?? "?"}: the ${key} stage failed (${(e.error || "").slice(0, 120)}), running it once more.`);
+    } else {
+      Object.assign(job, { status: "failed", stage: e.stage, error: e.error });
+      if (mine) s.running = null;
+      if (job.day) {
+        s.tries[job.day] = 1;
+        await say(env, `Day ${job.day}: ${failedDay(s, job.day)}`);
+      }
+    }
   }
   if (e.event === "ready") {
     Object.assign(job, { status: "ready", link: e.link, youtube: e.youtube || null, ready: new Date().toISOString() });
@@ -356,6 +372,18 @@ async function command(text, env) {
     if (!day) return say(env, "Send it like: /day 5");
     if (s.running) return say(env, `Day ${s.running.day} is still running; one video at a time.`);
     return say(env, await start(env, day).catch((err) => `Could not start day ${day}: ${err}`));
+  }
+  if (cmd === "/undo") {  // the last approval taken back: the video gets its Yes and No again and frees its slot
+    const keys = (await env.KV.list({ prefix: "job:" })).keys.map((k) => k.name);
+    const jobs = (await Promise.all(keys.map((k) => get(env, k, null)))).filter(Boolean);
+    const last = jobs.filter((j) => j.status === "approved").sort((a, b) => b.approved.localeCompare(a.approved))[0];
+    if (!last) return say(env, "No approved video to take back.");
+    await put(env, `job:${last.id}`, { ...last, status: "ready", publish_at: null });
+    const left = jobs.filter((j) => j.status === "approved" && j.id !== last.id).map((j) => j.publish_at).sort();
+    s.last_slot = left.at(-1) || null;
+    await put(env, "state", s);
+    return say(env, `Approval taken back: ${last.title || last.id}${last.link ? `\n${last.link}` : ""}`,
+      [[{ text: "Yes, publish", callback_data: `yes:${last.id}` }, { text: "No", callback_data: `no:${last.id}` }]]);
   }
   if (cmd === "/settings") {
     if (arg === "reset") await put(env, "settings", {});

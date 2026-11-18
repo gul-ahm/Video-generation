@@ -125,7 +125,12 @@ def page():
     global _browser
     if _browser is None:
         from playwright.sync_api import sync_playwright
-        _browser = sync_playwright().start().chromium.launch()
+        pw = sync_playwright().start()
+        try:
+            _browser = pw.chromium.launch()
+        except Exception:  # left running, the next card failed with "Sync API inside the asyncio loop"
+            pw.stop()
+            raise
     p = _browser.new_page(viewport={"width": 1920, "height": 1080})
     gsap = (ROOT / "gsap.min.js").read_text(encoding="utf-8")
     p.route(re.compile(r".*gsap.*\.js$"), lambda r: r.fulfill(body=gsap, content_type="text/javascript"))

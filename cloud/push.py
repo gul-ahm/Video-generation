@@ -11,7 +11,8 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-LIMIT = {"research": 3 * 3600, "gpu": 3 * 3600, "render": 9 * 3600}  # a render on 4 CPU cores took over 4 h
+# one machine rendering all chapters took over 4 hours; one chapter takes about 40 minutes
+LIMIT = {"research": 3 * 3600, "gpu": 3 * 3600, "part": 3 * 3600, "join": 2 * 3600, "render": 9 * 3600}
 
 
 def user():
@@ -25,7 +26,7 @@ def kaggle():
 
 def push(stage, job):
     """job: {"id", "title", "minutes", "style", "slug", "subject"}."""
-    me, slug = user(), f"studio-{stage}"
+    me, slug = user(), f"studio-render-{job['part']}" if stage == "part" else f"studio-{stage}"
     run = {**job, "stage": stage}
     with tempfile.TemporaryDirectory() as d:
         code = (HERE / "kernel.py").read_text().replace("__RUN__", json.dumps(run))
