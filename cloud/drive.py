@@ -52,7 +52,9 @@ def upload(path, name=None):
                                                        headers={**auth, "X-Upload-Content-Length": str(path.stat().st_size)},
                                                        json=meta, timeout=60)
     start.raise_for_status()
-    where, size, done = start.headers["Location"], path.stat().st_size, None
+    where, size = start.headers["Location"], path.stat().st_size
+    # an empty file (the markers) is one empty piece; the loop below sends none, and the upload never finished
+    done = requests.put(where, data=b"", timeout=60, headers={"Content-Length": "0"}) if not size else None
     with path.open("rb") as f:
         for at in range(0, size, 32 * 2 ** 20):
             piece = f.read(32 * 2 ** 20)

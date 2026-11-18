@@ -204,7 +204,7 @@ def mark(name):
     """An empty file on Drive that says something happened (a chapter pushed, the join pushed)."""
     import drive
     f = W / name
-    f.write_text("")
+    f.write_text("1")
     drive.upload(f)
     f.unlink()
 
@@ -237,7 +237,8 @@ def part_done():
     k, n = RUN["part"], RUN["chapters"]
     clip = max((folder() / "chapters").glob(f"{k:02d}_*.mp4"), key=os.path.getmtime)
     drive.upload(clip, f"job_{RUN['id']}_ch{k}.mp4")
-    parts(n)
+    if drive.find(f"job_{RUN['id']}_p0.pushed"):  # only when the markers work: without them every chapter pushed all six again
+        parts(n)
     if all(drive.find(f"job_{RUN['id']}_ch{j}.mp4") for j in range(n)) and not drive.find(f"job_{RUN['id']}_join"):
         mark(f"job_{RUN['id']}_join")
         push("join")
