@@ -216,7 +216,7 @@ async function joinWhenReady(env, job, all, by) {
 async function unitFailed(env, job, s, key, u, why, retry = true) {
   u = { ...u, tries: (u.tries || 0) + 1, state: "failed", why };
   await put(env, unitKey(job, key), u);
-  if (retry && u.tries < 2 && !s.paused) {
+  if (retry && u.tries < 2) {  // pause only stops new videos; the one running is finished
     const again = await pushUnit(env, job, key, u);
     return say(env, `Day ${job.day}: ${key} failed (${why.slice(0, 160)}). ` +
       (again.state === "pushed" ? "Running it once more." : "It runs once more when a Kaggle machine is free."));
@@ -342,6 +342,7 @@ async function tick(env) {
 async function kagglePush(env, run) {
   const code = await env.KV.get("kernel");
   if (!code) throw new Error("kernel.py is not in KV, run: python cloud.py worker");
+  run = { ...run, code: await env.KV.get("code_version") };  // the kernel stops if Kaggle mounts other code
   const me = env.KAGGLE_USERNAME;
   const name = run.stage === "part" ? `studio-render-${run.part}` : `studio-${run.stage}`;
   const gpu = run.stage === "gpu";

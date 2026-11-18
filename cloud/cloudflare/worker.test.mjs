@@ -115,13 +115,22 @@ test("a kernel that ended without a word is noticed by the watch and run again",
   assert.equal(w.pushes.filter((r) => r.stage === "part" && r.part === 1).length, before + 1);
 });
 
-test("pause stops new days and retries", async () => {
+test("pause stops new days but the running video is finished, retries included", async () => {
   const w = world();
   await toParts(w, 1);
   w.kv.set("state", JSON.stringify({ ...w.state(), paused: true }));
-  const pushed = w.pushes.length;
   await w.report(w.last("part", 0), "failed", { error: "boom" });
-  assert.equal(w.pushes.length, pushed);
+  assert.equal(w.pushes.filter((r) => r.stage === "part").length, 2);
+  await w.report(w.last("part", 0), "done");
+  await w.report(w.last("join"), "ready", { link: "L" });
+  assert.equal(w.pushes.filter((r) => r.stage === "research").length, 1, "no new day while paused");
+});
+
+test("every push carries the code version the datasets hold", async () => {
+  const w = world();
+  w.kv.set("code_version", "abc123");
+  await w.tick();
+  assert.equal(w.last("research").code, "abc123");
 });
 
 test("cloud.py can go on with the chapters still missing", async () => {

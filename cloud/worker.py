@@ -62,11 +62,13 @@ class Cloudflare:
         return f"https://{NAME}.{sub['subdomain']}.workers.dev"
 
 
-def kv_files(cf=None, space=None):
-    """cloud/kernel.py and plan.json into KV, so the daily start uses the code and the plan you have now."""
+def kv_files(cf=None, space=None, version=None):
+    """cloud/kernel.py, plan.json and the code version into KV, so the worker pushes what the datasets hold."""
     cf = cf or Cloudflare()
     space = space or cf.kv()
     cf.put(space, "kernel", (HERE / "kernel.py").read_text())
+    if version:
+        cf.put(space, "code_version", version)
     if (ROOT / "plan.json").exists():
         cf.put(space, "plan", (ROOT / "plan.json").read_text())
     print("  worker: kernel.py and plan.json in KV", flush=True)

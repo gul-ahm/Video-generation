@@ -11,7 +11,11 @@
 
 Run sync again after changing the code, the voice, the music or a key.
 """
+import hashlib
 import json
+import re
+import time
+from datetime import datetime, timedelta, timezone
 import subprocess
 import sys
 import tarfile
@@ -38,31 +42,60 @@ def pack(paths, out, extra=()):
             t.add(src, arcname=name)
 
 
+def live(slug):
+    """When the dataset's file was made, as Kaggle lists it (UTC)."""
+    out = subprocess.run([push.kaggle(), "datasets", "files", slug], capture_output=True, text=True).stdout
+    found = re.findall(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)", out)
+    return datetime.strptime(found[-1], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc) if found else None
+
+
 def dataset(name, tgz):
-    me, slug = push.user(), f"history-studio-{name}"
+    """A new version of a dataset, checked until Kaggle lists it. The kaggle tool once said ok for a code version that
+    never appeared, and the kernels of a whole test film ran the code from before."""
+    me = push.user()
+    slug, start = f"{me}/history-studio-{name}", datetime.now(timezone.utc) - timedelta(seconds=30)
     with tempfile.TemporaryDirectory() as d:
         Path(d, f"{name}.tgz").write_bytes(Path(tgz).read_bytes())
-        Path(d, "dataset-metadata.json").write_text(json.dumps({"id": f"{me}/{slug}", "title": slug,
+        Path(d, "dataset-metadata.json").write_text(json.dumps({"id": slug, "title": slug.split("/")[1],
                                                                 "licenses": [{"name": "unknown"}]}))
         k = push.kaggle()
-        r = subprocess.run([k, "datasets", "version", "-p", d, "-m", "update", "-q"], capture_output=True, text=True)
-        if r.returncode:  # the first time: the dataset does not exist yet
-            r = subprocess.run([k, "datasets", "create", "-p", d, "-q"], capture_output=True, text=True)
-    print(f"  {slug}: {'ok' if not r.returncode else (r.stderr or r.stdout).strip()[-200:]}", flush=True)
+        r = subprocess.run([k, "datasets", "version", "-p", d, "-m", "update"], capture_output=True, text=True)
+        if "being created" not in r.stdout:  # the first time: the dataset does not exist yet
+            r = subprocess.run([k, "datasets", "create", "-p", d], capture_output=True, text=True)
+    for _ in range(40):
+        made = live(slug)
+        if made and made > start:
+            return print(f"  {slug}: new version live ({made:%H:%M:%S} UTC)", flush=True)
+        time.sleep(15)
+    raise SystemExit(f"{slug}: Kaggle did not list the new version in 10 minutes ({(r.stdout + r.stderr).strip()[-300:]})")
+
+
+def stamp():
+    """A fingerprint of the code, written into code.tgz as VERSION: a kernel compares it with the one the worker gave
+    it, so a kernel that got an older code version stops at once and says so."""
+    h = hashlib.sha1()
+    for pattern in CODE:
+        for p in sorted(ROOT.glob(pattern)):
+            for f in sorted([p] if p.is_file() else p.rglob("*")):
+                if f.is_file() and not any(x in str(f) for x in SKIP):
+                    h.update(str(f.relative_to(ROOT)).encode() + f.read_bytes())
+    return h.hexdigest()[:12]
 
 
 def sync():
     with tempfile.TemporaryDirectory() as d:
-        pack(CODE, f"{d}/code.tgz")
+        version = stamp()
+        Path(d, "VERSION").write_text(version)
+        pack(CODE, f"{d}/code.tgz", [(Path(d, "VERSION"), "VERSION")])
         pack(ASSETS, f"{d}/assets.tgz")
         secrets = [(p, f"secrets/{p.name}") for p in (ROOT / "secrets").glob("*") if p.suffix in (".json", ".env")]
         pack([], f"{d}/secrets.tgz", secrets + [(Path.home() / ".kaggle" / "kaggle.json", "secrets/kaggle.json"),
                                                 (ROOT / ".env.example", "secrets/env.txt")])
         for name in ("code", "assets", "secrets"):
             dataset(name, f"{d}/{name}.tgz")
-    if (ROOT / "secrets" / "worker.env").exists():  # the daily start pushes the same kernel.py and plan
+    if (ROOT / "secrets" / "worker.env").exists():  # the worker pushes the same kernel.py, plan and code version
         import worker
-        worker.kv_files()
+        worker.kv_files(version=version)
 
 
 def send(folder):

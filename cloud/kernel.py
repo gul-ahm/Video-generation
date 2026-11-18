@@ -43,6 +43,10 @@ def unpack():
                 t.extractall(HOME, filter="fully_trusted")
         else:  # Kaggle unpacked the archive itself
             shutil.copytree(next(Path("/kaggle/input").glob(f"*{name}*")), HOME, dirs_exist_ok=True)
+    made = (HOME / "VERSION").read_text().strip() if (HOME / "VERSION").exists() else "none"
+    if RUN.get("code") and made != RUN["code"]:
+        raise RuntimeError(f"Kaggle mounted code version {made}, the worker sent {RUN['code']}: "
+                           "run `python cloud.py sync` again")
     kag = Path.home() / ".kaggle"
     kag.mkdir(exist_ok=True)
     shutil.copy(HOME / "secrets" / "kaggle.json", kag / "kaggle.json")
@@ -261,6 +265,7 @@ def main():
             deliver()
         print(f"{stage} done in {(time.time() - t0) / 60:.0f} min", flush=True)
     except BaseException as err:
+        sys.path.insert(0, str(HOME / "cloud"))
         try:
             hook("failed", error=str(err)[:400], kind="quality" if isinstance(err, Quality) else "error")
         except Exception as lost:  # the failure came before the code was unpacked: the worker's watch notices it
