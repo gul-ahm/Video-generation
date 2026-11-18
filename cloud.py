@@ -6,6 +6,7 @@
   python cloud.py start "Title" 22 gpu         start at a later stage, when the video folder is already on Drive
   python cloud.py day 1                        start day 1 of the plan in plan.json (title, length and its event)
   python cloud.py day 1 gpu                    the same, from a later stage (its folder is already on Drive)
+  python cloud.py parts 3 6                    day 3 has 6 chapters: render the ones not on Drive yet, or join them
   python cloud.py send output/<folder>         put a folder made on the Mac on Drive, so a later stage can continue it
   python cloud.py worker                       put the Cloudflare worker up (daily start, Telegram Yes and No)
 
@@ -85,6 +86,15 @@ if __name__ == "__main__":
     elif args[:1] == ["day"] and len(args) in (2, 3):
         d = next(x for x in json.loads((ROOT / "plan.json").read_text())["days"] if x["day"] == int(args[1]))
         push.push(args[2] if len(args) == 3 else "research", push.job(d["title"], d.get("minutes", 22), subject=d["subject"], day=d["day"]))
+    elif args[:1] == ["parts"] and len(args) == 3:
+        import drive
+        d = next(x for x in json.loads((ROOT / "plan.json").read_text())["days"] if x["day"] == int(args[1]))
+        job, n = push.job(d["title"], d.get("minutes", 22), subject=d["subject"], day=d["day"]), int(args[2])
+        missing = [k for k in range(n) if not drive.find(f"job_{job['id']}_ch{k}.mp4")]
+        for k in missing:
+            push.push("part", {**job, "part": k, "chapters": n})
+        if not missing:
+            push.push("join", {**job, "chapters": n})
     elif args[:1] == ["worker"]:
         import worker
         worker.deploy()

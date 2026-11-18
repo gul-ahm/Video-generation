@@ -26,6 +26,10 @@ def kaggle():
 
 def push(stage, job):
     """job: {"id", "title", "minutes", "style", "slug", "subject"}."""
+    sys.path.insert(0, str(HERE))
+    import drive
+    if drive.find("STOP"):  # the brake: a file named STOP in the Drive folder and no kernel starts another
+        raise SystemExit("STOP is in the Drive folder, nothing is pushed")
     me, slug = user(), f"studio-render-{job['part']}" if stage == "part" else f"studio-{stage}"
     run = {**job, "stage": stage}
     with tempfile.TemporaryDirectory() as d:

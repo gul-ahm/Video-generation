@@ -195,7 +195,7 @@ async function hook(e, env) {
     // a failed stage runs once more from where it stopped (its folder is on Drive); failing again, the day is skipped
     const key = `${e.stage}${e.run?.part ?? ""}`;
     job.retries = { ...(job.retries || {}), [key]: (job.retries?.[key] || 0) + 1 };
-    const again = e.run && job.retries[key] === 1 &&
+    const again = e.run && !s.paused && job.retries[key] === 1 &&
       (await kagglePush(env, e.run).then(() => true).catch(() => false));
     if (again) {
       Object.assign(job, { status: "running", stage: e.stage });
