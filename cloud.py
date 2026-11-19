@@ -5,7 +5,7 @@
   python cloud.py day 1 gpu                    the same, from a later stage (its folder is already on Drive)
   python cloud.py parts 3 6                    day 3 has 6 chapters: render the ones not on Drive yet, then the join
   python cloud.py tick                         let the worker look at the running video now instead of in 30 minutes
-  python cloud.py test                         a 3 minute film through every stage, to check the cloud
+  python cloud.py test                         an 8 minute film through every stage, to check the cloud
   python cloud.py send output/<folder>         put a folder made on the Mac on Drive, so a later stage can continue it
   python cloud.py worker                       put the Cloudflare worker up (daily start, Telegram Yes and No)
 
@@ -138,9 +138,9 @@ if __name__ == "__main__":
         done = [k for k in range(n) if drive.find(f"job_{job['id']}_ch{k}.mp4") and drive.find(f"job_{job['id']}_ch{k}.json")]
         print(f"  on Drive: chapters {[k + 1 for k in done]} of {n}")
         ask("/start", {"day": d["day"], "from": "join" if len(done) == n else "parts", "chapters": n, "done": done})
-    elif args[:1] == ["test"]:  # a 3 minute film through every stage, to check the cloud before the plan goes on
-        ask("/start", {"day": 0, "title": "The Battle of al-Qadisiyyah in Three Minutes",
-                       "subject": "Battle of al-Qadisiyyah, 636", "minutes": 3})
+    elif args[:1] == ["test"]:  # an 8 minute film through every stage: long enough for chapters like a real film's
+        ask("/start", {"day": 0, "title": "The Battle of al-Qadisiyyah: Four Days That Ended an Empire",
+                       "subject": "Battle of al-Qadisiyyah, 636", "minutes": 8})
     elif args[:1] == ["tick"]:
         ask("/tick")
     elif args[:1] == ["worker"]:
