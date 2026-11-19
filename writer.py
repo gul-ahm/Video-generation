@@ -299,6 +299,37 @@ def llm(prompt, as_json=False, temp=0.8, fast=False):
     raise SystemExit("the LLM kept failing, try again in a few minutes")
 
 
+def see(prompt, image):
+    """A question about a picture, answered as JSON by a model that sees (LLM_VISION, else LLM_FAST, then LLM_MODEL).
+    The picture goes at 768 pixels wide: enough to judge it, a fraction of the tokens."""
+    import base64
+    import io
+    from PIL import Image
+    global _client
+    _client = _client or OpenAI(base_url=os.getenv("LLM_BASE_URL"), api_key=os.getenv("LLM_API_KEY"),
+                                timeout=float(os.getenv("LLM_TIMEOUT", "150")), max_retries=0)
+    img = Image.open(image).convert("RGB")
+    img.thumbnail((768, 768))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=85)
+    url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    msg = [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": url}}]}]
+    last = None
+    for model in dict.fromkeys(m for m in (os.getenv("LLM_VISION"), os.getenv("LLM_FAST", "gemini-3.1-flash-lite"),
+                                           os.getenv("LLM_MODEL")) if m):
+        for wait in (0, 15, 45):
+            time.sleep(wait)
+            try:
+                r = _client.chat.completions.create(model=model, messages=msg, temperature=0.1,
+                                                    response_format={"type": "json_object"})
+                return objects(r.choices[0].message.content)
+            except NotFoundError:
+                break
+            except Exception as err:  # busy or rate limited: wait and try again
+                last = err
+    raise SystemExit(f"no model could look at {Path(image).name}: {str(last)[:200]}")
+
+
 def ask(model, prompt, temp, extra, limit):
     """The API timeout only counts silence between bytes, so a slow answer could take 20 minutes. This gives up after
     `limit` seconds of wall clock time; the abandoned request finishes in the background."""

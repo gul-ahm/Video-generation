@@ -158,17 +158,17 @@ def work(stage):
 # the lines of a build that say how far it is
 STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "render ", "done:")
 
-# a film below this is not offered for approval: the edit itself lost its cards, captions or timing
-NEEDED = ("time with caption or card", "full screen cards per minute", "longest still moment", "timing error",
-          "loudness", "music under the voice")
+CHECKS = 15  # qa.py's checks; a film is offered for approval only when every one passes
 
 
 def quality(f):
-    """(summary, failed checks, the checks the gate needs that failed) from qa.md."""
+    """(summary, failed checks, what holds the film back) from qa.md: every failed check holds it, and so does a
+    qa.md with fewer checks than expected."""
     qa = (f / "qa.md").read_text().splitlines() if (f / "qa.md").exists() else []
     rows = [[c.strip() for c in l.split("|")[1:4]] for l in qa if l.count("|") >= 4 and (" ok" in l or " FIX" in l)]
     fix = [f"{r[0]}: {r[1]} (target {r[2]})" for r in rows if r[1].endswith("FIX")]
-    return next((l for l in qa if "checks pass" in l), ""), fix, [x for x in fix if x.startswith(NEEDED)]
+    short = [f"only {len(rows)} of {CHECKS} checks ran"] if len(rows) < CHECKS else []
+    return next((l for l in qa if "checks pass" in l), ""), fix, fix + short
 
 
 def deliver():
@@ -185,7 +185,8 @@ def deliver():
         if (f / extra).exists():
             drive.upload(f / extra, f"{RUN['slug']}_{extra}")
     if blocking:
-        raise Quality(f"quality gate: {summary}; " + "; ".join(blocking) + f". The film is on Drive to look at: {link}")
+        raise Quality(f"the film was made but is held: {summary}. Failed: " + "; ".join(blocking) +
+                      f". Look at it on Drive: {link}")
     pack = json.loads((f / "youtube_pack.json").read_text()) if (f / "youtube_pack.json").exists() else {}
     titles = pack.get("titles") or [{}]
     best = titles[pack.get("best", 0) if isinstance(pack.get("best"), int) else 0].get("title") or RUN["title"]

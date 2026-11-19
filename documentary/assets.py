@@ -20,10 +20,15 @@ CLEAN = """
     const t = (b.innerText || '').trim().toLowerCase();
     if (/^(accept|accept all|agree|i agree|allow all|got it|ok|continue|reject all)$/.test(t)) { try { b.click(); } catch (e) {} }
   }
+  const nag = /cookie|consent|privacy|personali[sz]e|subscribe|newsletter|sign up|log in|allow notifications/i;
   for (const el of document.querySelectorAll('*')) {
     const s = getComputedStyle(el);
-    if ((s.position === 'fixed' || s.position === 'sticky') && el.offsetHeight < innerHeight * 0.6) el.style.display = 'none';
+    const floating = s.position === 'fixed' || s.position === 'sticky';
+    const dialog = el.matches('[role=dialog], [role=alertdialog], [aria-modal=true], dialog');
+    // bars that stick to the screen, and any overlay that asks for something, whatever its size
+    if (dialog || (floating && (el.offsetHeight < innerHeight * 0.6 || nag.test(el.innerText || '')))) el.style.display = 'none';
   }
+  document.documentElement.style.overflow = document.body.style.overflow = 'auto';
   const h = document.querySelector('h1');
   if (h) scrollTo(0, Math.max(0, h.getBoundingClientRect().top + scrollY - 120));
   return h ? h.innerText.trim().slice(0, 160) : '';
@@ -55,6 +60,23 @@ MARK = """
 """
 
 
+# the words actually on screen, and whether the middle of the screen is covered by a dialog
+VISIBLE = """
+() => {
+  const out = [], walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  while (walk.nextNode()) {
+    const n = walk.currentNode, el = n.parentElement;
+    if (!el || !n.textContent.trim()) continue;
+    const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    if (r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth && s.visibility !== 'hidden'
+        && Number(s.opacity) > 0.1) out.push(n.textContent);
+  }
+  const mid = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+  return {text: out.join(' '), covered: !!(mid && mid.closest('[role=dialog], [aria-modal=true], dialog'))};
+}
+"""
+
+
 def words(text):
     return {w for w in re.findall(r"[a-z]{4,}", text.lower())}
 
@@ -67,6 +89,12 @@ def genuine(page, source):
     share = len(article & words(seen)) / max(1, len(article))
     if share < 0.4 or (share < 0.7 and any(b in seen[:2000].lower() for b in research.BLOCKED)):
         return False, f"page does not match the article ({share:.0%} of its words)"
+    # the whole page can match while a cookie or sign up box covers what the screenshot shows
+    view = page.evaluate(VISIBLE)
+    on_screen = words(view["text"])
+    mine = len(on_screen & article) / max(1, len(on_screen))
+    if view["covered"] or mine < 0.35:  # menus and sidebars are on screen too
+        return False, f"the screen shows a dialog or other text, not the article ({mine:.0%} of its words)"
     return True, ""
 
 

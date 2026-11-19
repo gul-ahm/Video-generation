@@ -257,14 +257,39 @@ def lit(ch, plan):
     return prompts
 
 
-def drawn(ch, plan):
-    """The prompt of every picture a chapter draws (None: no picture). Without real footage a clip line is drawn like
-    timeline() does; in the cloud the render machine has no GPU, so it is drawn with the rest and stays unused when
-    footage is found."""
+# a picture stays on screen for about this many spoken words (188 a minute: about 6 seconds); a longer beat gets a
+# second and third view of its scene. One picture per 40 word beat held 13 seconds and drifted off the sentence.
+WORDS_PER_PICTURE = int(os.getenv("WORDS_PER_PICTURE", "18"))
+VIEWS = ("the same moment from another angle, closer", "the same scene from further away, wide")
+SOURCE_MAX = float(os.getenv("SOURCE_MAX", "4.5"))  # an article fills the screen this long, then the beat's picture
+
+
+def source_parts(line):
+    """'source: <screenshot> | <outlet> | <date> | <picture prompt>' as (screenshot, outlet, date, prompt)."""
+    return tuple(([x.strip() for x in line[7:].split("|")] + ["", "", ""])[:4])
+
+
+def pictures_of(ch, plan, skip=()):
+    """Every picture a chapter draws, in order: (prompt, beat, pose steps). A clip line is drawn like a picture line
+    when it gets no real footage (in the cloud always: the render machine has no GPU); a beat that shows an article
+    draws its own picture for the time after the article."""
     clips = os.getenv("CLIPS", "1") == "1" and os.getenv("CLOUD") != "1"
-    prompts = [(None if clips else f"{p[5:].strip()}, showing: {shot[2][:150]}") if p and p.lower().startswith("clip:")
-               else p for p, shot in zip(lit(ch, plan), ch["shots"])]
-    return [None if p and p.lower().startswith("source:") else p for p in prompts]
+    out = []
+    for i, (p, shot) in enumerate(zip(lit(ch, plan), ch["shots"])):
+        if not p or i in skip:
+            continue
+        if p.lower().startswith("clip:"):
+            if clips:
+                continue
+            p = f"{p[5:].strip()}, showing: {shot[2][:150]}"
+        if p.lower().startswith("source:"):
+            p = source_parts(p)[3]
+            if not p:
+                continue
+        views = max(1, min(3, -(-shot[1] // WORDS_PER_PICTURE)))
+        poses = shot[3] if os.getenv("POSES", "1") == "1" else []
+        out += [(p if v == 0 else f"{p}, {VIEWS[v - 1]}", i, poses if v == 0 else []) for v in range(views)]
+    return out
 
 
 def on_kaggle(s, plans, folder):
@@ -274,8 +299,8 @@ def on_kaggle(s, plans, folder):
         return 0
     todo, moves = [], []
     for i, (ch, plan) in enumerate(zip(s["chapters"], plans)):
-        poses = [x[3] if os.getenv("POSES", "1") == "1" else [] for x in ch["shots"]]
-        _, t, m = visuals.pending(drawn(ch, plan), folder / "img" / f"{i:02d}", poses)
+        flat = pictures_of(ch, plan)
+        _, t, m = visuals.pending([f[0] for f in flat], folder / "img" / f"{i:02d}", [f[2] for f in flat])
         todo, moves = todo + t, moves + m
     try:
         return kaggle_gpu.pictures(todo, moves)
@@ -286,10 +311,55 @@ def on_kaggle(s, plans, folder):
         return 0
 
 
+FIT = """A documentary about {subject}. This picture is on screen while the narrator says:
+"{line}"
+It was asked for as: "{prompt}"
+Return JSON {{"fits": true or false, "problem": "what is wrong, or empty"}}. It fits only when it shows what the
+narration speaks of and everything in it belongs to that time and place: weapons, armour, clothes, buildings,
+animals. A firearm, a cannon, a top hat or anything from a later century, text or letters in the picture, a
+deformed body, or a scene that has nothing to do with the line is not a fit."""
+
+
+def check_pictures(s, plans, folder):
+    """Every picture looked at by a model that sees, against its own sentence and its era; one that does not fit is
+    drawn again with another seed, twice at most. The result goes to picture_check.json for the quality check, so a
+    film with pictures that miss their line is held, not offered."""
+    subject = os.getenv("DOC_SUBJECT") or s["title"]
+    items = {}
+    for i, (ch, plan) in enumerate(zip(s["chapters"], plans)):
+        flat = pictures_of(ch, plan)
+        paths = visuals.pending([f[0] for f in flat], folder / "img" / f"{i:02d}", [f[2] for f in flat])[0]
+        for k, ((p, beat, _), path) in enumerate(zip(flat, paths)):
+            if path and path.exists():
+                items[path] = (p, ch["shots"][beat][2], 101 + k)
+
+    def look(path):
+        p, line, _ = items[path]
+        got = writer.see(FIT.format(subject=subject, line=line[:400], prompt=p[:300]), path)
+        return path, bool(got.get("fits")), str(got.get("problem", ""))[:200]
+
+    verdict, todo = {}, list(items)
+    for attempt in range(3):
+        with ThreadPoolExecutor(6) as ex:
+            verdict.update({path: (fits, why) for path, fits, why in ex.map(look, todo)})
+        todo = [x for x in todo if not verdict[x][0]]
+        print(f"  pictures: {len(items) - len(todo)} of {len(items)} fit their line", flush=True)
+        if not todo or attempt == 2:
+            break
+        for path in todo:  # the picture and everything made from it (cut out layers, pose frames)
+            for f in path.parent.glob(f"{path.stem}.*"):
+                f.unlink()
+        kaggle_gpu.pictures([(f"{items[x][0]}, true to {subject}", items[x][2] + 1000 * (attempt + 1), x) for x in todo], [])
+    (folder / "picture_check.json").write_text(json.dumps({
+        "checked": len(items), "fit": sum(v[0] for v in verdict.values()),
+        "misses": [{"file": x.name, "line": items[x][1][:160], "problem": verdict[x][1]} for x in todo]},
+        indent=1, ensure_ascii=False), encoding="utf-8")
+
+
 def source_card(line, folder):
     """A picture line "source: <screenshot> | <outlet> | <date>" (documentary/) as a full screen card, or None when
     the screenshot is missing (the beat then keeps the picture before it)."""
-    shot, outlet, date = ([x.strip() for x in line[7:].split("|")] + ["", ""])[:3]
+    shot, outlet, date, _ = source_parts(line)
     if not Path(shot).exists():
         return None
     spec = {"kind": "source", "image": shot, "title": outlet, "sub": date}
@@ -322,47 +392,56 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
     prompts = lit(ch, plan)
     real, credits = {}, []
     for i, p in enumerate(prompts):
-        if p and p.lower().startswith("clip:"):
-            query = p[5:].strip()
-            got = footage.clips(query, min(3, parts[i]), folder.parent / "clips") if use_clips else []
+        if p and p.lower().startswith("clip:") and use_clips:
+            got = footage.clips(p[5:].strip(), min(3, parts[i]), folder.parent / "clips")
             if got:
                 real[i] = got
                 credits += [c for _, c in got]
-            prompts[i] = f"{query}, showing: {ch['shots'][i][2][:150]}"
-    poses = [s[3] if os.getenv("POSES", "1") == "1" else [] for s in ch["shots"]]
     proof = {i: source_card(p, folder) for i, p in enumerate(prompts) if p and p.lower().startswith("source:")}
-    base = visuals.scenes([None if i in real or i in proof else p for i, p in enumerate(prompts)], folder, poses)
-    for i, card in proof.items():  # the article itself fills the screen for this beat, in one unbroken shot
-        base[i], parts[i] = card, 1 if card else parts[i]
+    flat = pictures_of(ch, plan, skip=real)
+    views = {i: [] for i in range(len(prompts))}
+    for (p, i, _), pic in zip(flat, visuals.scenes([f[0] for f in flat], folder, [f[2] for f in flat])):
+        if pic:
+            views[i].append(pic)
+            for x in [pic, *visuals.pose_files(pic)]:
+                motion.prepare(x, p)
+    base = [views[i][0] if views[i] else None for i in range(len(prompts))]
     pool, stock_credits = ([], []) if any(base) or real else visuals.stock(ch["visuals"], sum(parts), folder)
-    for img, p in zip(base, prompts):
-        for pic in [img, *visuals.pose_files(img)] if img and img.suffix != ".json" else []:
-            motion.prepare(pic, p)
 
     shots, k, last = [], 0, next((b for b in base if b), None)
     for i, (img, length, n) in enumerate(zip(base, lens, parts)):
         look = looks[i]
         air = look.get("air") or motion.air(f"{prompts[i] or ''} {ch['shots'][i][2]}")
         air = None if air == "none" else air
-        for j in range(n):
-            if i in real:
+        if i in real:
+            for j in range(n):
                 clip, _ = real[i][j % len(real[i])]
                 shots.append([clip, length / n, (j // len(real[i])) * length / n])
+            continue
+        if proof.get(i):  # the article fills the screen briefly, then the beat's own picture takes over
+            card = min(length, SOURCE_MAX) if length - SOURCE_MAX >= 1.5 else length
+            shots.append([proof[i], card, 0.0])
+            length -= card
+            if length <= 0:
                 continue
+            n = max(1, round(length / secs))
+        pics = views[i]
+        n = max(n, len(pics))
+        for j in range(n):
             if not img and pool:
                 last, k = pool[k % len(pool)], k + 1
-            last = img or last
+            last = pics[j * len(pics) // n] if pics else img or last
             if last is None:
                 raise RuntimeError(f"no visuals for chapter '{ch['title']}', check internet or the visuals line")
             # the first shot of a beat plays its poses (render does that), the next ones hold the final pose
-            moved = visuals.pose_files(last) if j or not img else []
+            moved = visuals.pose_files(last) if j or not pics else []
             move = look.get("move")  # the director's move opens the beat, the next framings vary from it
             move = writer.MOVES[(writer.MOVES.index(move) + 2 * j) % 7] if move and j else move
             shots.append([moved[-1] if moved else last, length / n, 0.0, {"air": air, **({"move": move} if move else {})}])
     if not first and len(shots[0]) > 3:
         shots[0][3]["intro"] = "sparkle"
 
-    pics = list(dict.fromkeys(b for b in base if b))
+    pics = list(dict.fromkeys(x for v in views.values() for x in v))
     for word, e in sorted(plan.get("elements", []), key=lambda x: x[0]):
         t = at(word)
         if e.get("kind") in CARDS and dur - t > 2.0:
@@ -518,6 +597,7 @@ def build(folder):
             voices = voice.narrate(s["chapters"], folder)
             plans = get_plans()
             on_kaggle(s, plans, folder)
+            check_pictures(s, plans, folder)
         else:  # the pictures need only the prompts and the moods, so Kaggle draws them while the Mac is still speaking
             drawing = ex.submit(lambda: on_kaggle(s, get_plans(), folder))
             voices = voice.narrate(s["chapters"], folder)
@@ -543,7 +623,8 @@ def build(folder):
         if part is not None and i and not hold.exists():
             # rendered side by side, the chapter before is not done yet: its last picture stands in for its last frame
             ch, plan = s["chapters"][i - 1], plans[i - 1]
-            before = [x for x in visuals.pending(drawn(ch, plan), folder / "img" / f"{i - 1:02d}")[0] if x and x.exists()]
+            before = [x for x in visuals.pending([f[0] for f in pictures_of(ch, plan)], folder / "img" / f"{i - 1:02d}")[0]
+                      if x and x.exists()]
             if before:
                 w, h = visuals.size()
                 render.ffmpeg("-i", before[-1], "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
@@ -560,10 +641,11 @@ def build(folder):
         print(f"  render {i + 1}/{len(voices)} done", flush=True)
         return out, (shots, mix)
 
-    credits, cover, jobs, done = [], None, [], []
+    credits, cover, jobs, done, kinds = [], None, [], [], {}
     if part == "join":  # each chapter machine left its clip and its plan; nothing is drawn or rendered again
         for i in range(len(voices)):
             got = json.loads((folder / "chapters" / f"{i:02d}_cloud.json").read_text(encoding="utf-8"))
+            kinds.update(got.get("kinds", {}))
             shots = [(Path(x[0]), *x[1:]) for x in got["shots"]]
             cover = cover or (Path(got["cover"]) if got["cover"] else None)
             credits += [c for c in got["credits"] if c not in credits]
@@ -578,9 +660,11 @@ def build(folder):
                 cover = cover or next((x[0] for x in shots if x[0].suffix == ".jpg"), None)
                 credits += [c for c in cr if c not in credits]
                 jobs.append(ex.submit(finish, i, shots, mix, audio, dur, words))
-                if part is not None:  # what the join needs from this chapter, next to its clip
+                if part is not None:  # what the join needs from this chapter, next to its clip (cards are made here)
+                    specs = {str(x[0]): json.loads(x[0].read_text(encoding="utf-8")) for x in shots if x[0].suffix == ".json"}
                     (folder / "chapters" / f"{i:02d}_plan.json").write_text(json.dumps(
-                        {"shots": shots, "mix": mix, "credits": cr, "cover": cover}, default=str), encoding="utf-8")
+                        {"shots": shots, "mix": mix, "credits": cr, "cover": cover, "kinds": specs}, default=str),
+                        encoding="utf-8")
             visuals.release()
             laps["visuals"] = time.time() - t0 - sum(laps.values())
             done = [j.result() for j in jobs]
@@ -595,7 +679,7 @@ def build(folder):
     laps["render"] = time.time() - t0 - sum(laps.values())
     render.srt([v[2] for v in voices], starts, folder / "subtitles.srt")
     visuals.thumbnail(cover, s["thumb"], folder / "thumbnail.jpg")
-    qa.report(folder, [x for _, x in done], t, laps)
+    qa.report(folder, [x for _, x in done], t, laps, kinds)
     if os.getenv("LLM_API_KEY"):
         try:  # the video is finished; a busy Gemini only delays the description, which `make.py build` redoes
             writer.youtube_meta(s, starts, credits, folder / "youtube.txt")

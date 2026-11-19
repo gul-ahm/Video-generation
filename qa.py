@@ -27,7 +27,37 @@ TARGETS = {  # name: (low, high, what the reference measured)
     "loudness (LUFS)": (-15.5, -12.5, "YouTube plays at -14"),
     "timing error (s)": (0.0, 0.15, "card on the spoken word"),
     "longest still moment (s)": (0.0, 2.0, "huashu: a still picture longer than 2 s feels like a slideshow"),
+    # what the eye sees in a documentary: the same picture, the same page, pictures that fit the sentence
+    "longest same picture (s)": (0.0, 8.0, "camera moves on one picture still read as one picture"),
+    "time on article screenshots (%)": (0.0, 25.0, "proof, not the film: half the test film was pages"),
+    "different pictures per minute": (4.0, 12.0, "5.4 in the Constantinople film"),
+    "pictures that fit their line (%)": (90.0, 100.0, "checked by a model that sees, era and subject"),
+    "pages from trusted sites (%)": (100.0, 100.0, "reference works, universities, museums, Sunni hadith sites"),
 }
+
+
+def kind(shot, kinds):
+    """What a shot shows: a card's kind (source = an article page), or picture, clip."""
+    path = shot[0]
+    if path.suffix != ".json":
+        return "clip" if path.suffix in (".mp4", ".mov", ".webm") else "picture"
+    if str(path) in kinds:
+        return kinds[str(path)]["kind"]
+    return json.loads(path.read_text(encoding="utf-8")).get("kind", "card") if path.exists() else "card"
+
+
+def root(path):
+    """One picture whatever its pose frame or cut out layer: s1a2b3.p2.jpg and s1a2b3.jpg are the same picture."""
+    return path.parent / path.name.split(".")[0]
+
+
+def longest_same(shots):
+    run, best, last = 0.0, 0.0, None
+    for s in shots:
+        r = root(s[0])
+        run = run + s[1] if r == last else s[1]
+        best, last = max(best, run), r
+    return best
 REFS = Path("assets/reference")
 
 
@@ -102,14 +132,22 @@ def side_by_side(folder):
             "| video | cuts per minute | frames with movement (%) | longest still moment (s) |", "|---|---|---|---|", *rows, ""]
 
 
-def report(folder, chapters, total, laps=None):
-    """chapters: [(shots, (events, sections, scenes))] as make.py built them; laps: seconds per step."""
+def report(folder, chapters, total, laps=None, kinds=None):
+    """chapters: [(shots, (events, sections, scenes))] as make.py built them; laps: seconds per step; kinds: card
+    path -> its spec, for cards drawn on another machine."""
     video = folder / "final.mp4"
     m = motion(frames(video))
+    kinds = kinds or {}
     shots = [s for ch, _ in chapters for s in ch]
     lens = [s[1] for s in shots]
-    covered = sum(s[1] for s in shots if s[0].suffix == ".json" or (len(s) > 3 and s[3].get("caption")))
-    cards = sum(1 for s in shots if s[0].suffix == ".json")
+    what = [kind(s, kinds) for s in shots]
+    covered = sum(s[1] for s, k in zip(shots, what) if k not in ("picture", "clip") or (len(s) > 3 and s[3].get("caption")))
+    cards = sum(1 for k in what if k not in ("picture", "clip", "source"))  # an article page is not a designed card
+    pages = [s for s, k in zip(shots, what) if k == "source"]
+    outlets = [(kinds.get(str(s[0])) or json.loads(s[0].read_text(encoding="utf-8"))).get("title", "") for s in pages]
+    check = json.loads((folder / "picture_check.json").read_text()) if (folder / "picture_check.json").exists() else {}
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "documentary"))
+    import research  # the list of sites trusted as proof
     events = sum(len(m[0]) for _, m in chapters)
     music = sum(end - start for _, m in chapters for start, end, *_ in m[1])
     minutes = total / 60
@@ -124,6 +162,11 @@ def report(folder, chapters, total, laps=None):
         "loudness (LUFS)": loudness(video),
         "timing error (s)": timing(chapters),
         "longest still moment (s)": m["still"],
+        "longest same picture (s)": longest_same(shots),
+        "time on article screenshots (%)": sum(s[1] for s in pages) / total * 100,
+        "different pictures per minute": len({root(s[0]) for s, k in zip(shots, what) if k == "picture"}) / minutes,
+        "pictures that fit their line (%)": check["fit"] / max(1, check["checked"]) * 100 if check else 0.0,
+        "pages from trusted sites (%)": sum(map(research.trusted, outlets)) / len(outlets) * 100 if outlets else 100.0,
     }
     rows = ["| check | this video | target | reference |", "|---|---|---|---|"]
     passed = 0

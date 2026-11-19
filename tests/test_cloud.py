@@ -80,35 +80,37 @@ class Drive(unittest.TestCase):
             self.assertEqual(sizes, [32 * 2 ** 20, 5])
 
 
-QA = """# Quality check: battle
-
-{n} of 10 checks pass
-
-| check | this video | target | reference |
-|---|---|---|---|
-| cuts per minute | 11.61 ok | 10 to 16 | 12.7 |
-| frames with movement (%) | 56.87 FIX | 60 to 100 | 94 in the cartoon |
-| time with caption or card (%) | {cap} | 45 to 100 | about 60 |
-| full screen cards per minute | 3.55 ok | 1.0 to 4.0 | about 1.7 |
-| longest still moment (s) | 0.17 ok | 0.0 to 2.0 | huashu |
-"""
+def qa_md(fails=()):
+    """A qa.md with all 15 checks, the named ones failing."""
+    import qa
+    rows = [f"| {name} | 1.00 {'FIX' if name in fails else 'ok'} | {lo} to {hi} | {ref} |"
+            for name, (lo, hi, ref) in qa.TARGETS.items()]
+    return "\n".join([f"{len(rows) - len(fails)} of {len(rows)} checks pass", "",
+                      "| check | this video | target | reference |", "|---|---|---|---|", *rows])
 
 
 class Gate(unittest.TestCase):
-    def check(self, n, cap):
+    def check(self, text):
         with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "qa.md").write_text(QA.format(n=n, cap=cap))
+            (Path(d) / "qa.md").write_text(text)
             return kernel().quality(Path(d))
 
-    def test_a_good_film_passes_with_its_small_misses_listed(self):
-        summary, fix, blocking = self.check(9, "63.52 ok")
-        self.assertEqual(summary, "9 of 10 checks pass")
-        self.assertEqual(fix, ["frames with movement (%): 56.87 FIX (target 60 to 100)"])
-        self.assertEqual(blocking, [])
+    def test_qa_has_fifteen_checks_and_the_kernel_expects_fifteen(self):
+        import qa
+        self.assertEqual(len(qa.TARGETS), 15)
+        self.assertEqual(kernel().CHECKS, 15)
 
-    def test_a_film_without_its_cards_is_held(self):
-        _, _, blocking = self.check(7, "21.00 FIX")
-        self.assertEqual(blocking, ["time with caption or card (%): 21.00 FIX (target 45 to 100)"])
+    def test_only_fifteen_of_fifteen_is_offered(self):
+        summary, fix, blocking = self.check(qa_md())
+        self.assertEqual((summary, fix, blocking), ("15 of 15 checks pass", [], []))
+
+    def test_one_failed_check_holds_the_film(self):
+        _, _, blocking = self.check(qa_md(["frames with movement (%)"]))
+        self.assertEqual(blocking, ["frames with movement (%): 1.00 FIX (target 60 to 100)"])
+
+    def test_a_qa_with_missing_checks_holds_the_film(self):
+        text = "\n".join(l for l in qa_md().splitlines() if "pictures that fit" not in l)
+        self.assertEqual(self.check(text)[2], ["only 14 of 15 checks ran"])
 
     def test_a_held_film_is_reported_not_offered(self):
         with tempfile.TemporaryDirectory() as d:
@@ -116,14 +118,150 @@ class Gate(unittest.TestCase):
             f = Path(d) / "output" / "battle"
             f.mkdir(parents=True)
             (f / "final.mp4").write_bytes(b"v")
-            (f / "qa.md").write_text(QA.format(n=7, cap="21.00 FIX"))
+            (f / "qa.md").write_text(qa_md(["longest same picture (s)"]))
             fake = types.SimpleNamespace(upload=mock.Mock(return_value=("id", "LINK")))
             with mock.patch.dict(sys.modules, {"drive": fake}), mock.patch.object(k, "hook") as hook:
                 with self.assertRaises(k.Quality) as caught:
                     k.deliver()
             self.assertIn("LINK", str(caught.exception))
+            self.assertIn("longest same picture", str(caught.exception))
             self.assertEqual(fake.upload.call_args_list[0].args[1], "battle_held.mp4")
             hook.assert_not_called()
+
+
+class Checks(unittest.TestCase):
+    """The five checks added after the test film: what the eye sees in a documentary."""
+
+    def test_the_same_picture_is_one_picture_through_its_pose_frames(self):
+        import qa
+        p = Path("img/00/s1a2b3.jpg")
+        shots = [[p, 3.0], [p.with_name("s1a2b3.p1.jpg"), 3.0], [p.with_name("s1a2b3.p2.jpg"), 3.0],
+                 [Path("img/00/s9z8y7.jpg"), 4.0], [p, 2.0]]
+        self.assertEqual(qa.longest_same(shots), 9.0)
+
+    def test_an_article_page_is_not_counted_as_a_designed_card(self):
+        import qa
+        kinds = {"img/00/card_a.json": {"kind": "source", "title": "en.wikipedia.org"},
+                 "img/00/card_b.json": {"kind": "stat"}}
+        self.assertEqual([qa.kind([Path(k), 1.0], kinds) for k in kinds], ["source", "stat"])
+        self.assertEqual(qa.kind([Path("img/00/s1.jpg"), 1.0], kinds), "picture")
+
+    def test_only_reference_works_and_hadith_sites_count_as_trusted(self):
+        sys.path.insert(0, str(ROOT / "documentary"))
+        import research
+        got = {u: research.trusted(u) for u in ("en.wikipedia.org", "https://sunnah.com/bukhari", "history.ucla.edu",
+                                                 "pakasiayouthforum.com", "the-epoch-institute.org", "notwikipedia.org")}
+        self.assertEqual(list(got.values()), [True, True, True, False, False, False])
+
+    def test_a_film_about_636_may_not_show_guns_or_top_hats(self):
+        import visuals
+        with mock.patch.dict(os.environ, {"DOC_SUBJECT": "Battle of al-Qadisiyyah, 636", "STYLE": "documentary"}):
+            avoid = visuals.style()[2]
+        self.assertIn("cannon", avoid)
+        self.assertIn("top hat", avoid)
+        with mock.patch.dict(os.environ, {"DOC_SUBJECT": "Fall of Constantinople, 1453", "STYLE": "documentary"}):
+            self.assertNotIn("cannon", visuals.style()[2])  # the Ottomans had them
+
+    def test_a_long_beat_gets_more_than_one_picture_and_an_article_beat_keeps_its_own(self):
+        import make
+        ch = {"shots": [("Wide shot of the camp", 40, "forty words", ["pose"]),
+                        ("source: a.png | en.wikipedia.org | | Close shot of a letter", 10, "ten words", []),
+                        ("Close shot of a sword", 12, "twelve", [])]}
+        with mock.patch.object(make, "lit", lambda ch, plan: [x[0] for x in ch["shots"]]):
+            got = make.pictures_of(ch, {})
+        self.assertEqual([(beat, poses) for _, beat, poses in got], [(0, ["pose"]), (0, []), (0, []), (1, []), (2, [])])
+        self.assertTrue(got[1][0].endswith(make.VIEWS[0]))
+        self.assertEqual(got[3][0], "Close shot of a letter")
+        self.assertEqual(make.source_parts("source: a.png | bbc.com | 2024-01-02")[:3], ("a.png", "bbc.com", "2024-01-02"))
+
+    def test_a_picture_that_misses_its_line_is_drawn_again_and_counted(self):
+        import make
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            pic = folder / "img" / "00" / "s1.jpg"
+            pic.parent.mkdir(parents=True)
+            pic.write_bytes(b"x")
+            (pic.parent / "s1.fg.png").write_bytes(b"x")
+            answers = iter([{"fits": False, "problem": "a cannon"}, {"fits": True}])
+            redrawn = []
+
+            def draw(todo, moves):
+                redrawn.extend(todo)
+                for _, _, dst in todo:
+                    dst.write_bytes(b"y")
+
+            script = {"title": "t", "chapters": [{"shots": [("Wide shot", 10, "the line", [])]}]}
+            with mock.patch.object(make, "pictures_of", lambda ch, plan: [("Wide shot", 0, [])]), \
+                    mock.patch.object(make.visuals, "pending", lambda p, f, poses=None: ([pic], [], [])), \
+                    mock.patch.object(make.writer, "see", lambda q, path: next(answers)), \
+                    mock.patch.object(make.kaggle_gpu, "pictures", draw), \
+                    mock.patch.dict(os.environ, {"DOC_SUBJECT": "Battle of al-Qadisiyyah, 636"}):
+                make.check_pictures(script, [{}], folder)
+            got = json.loads((folder / "picture_check.json").read_text())
+            self.assertEqual((got["checked"], got["fit"], got["misses"]), (1, 1, []))
+            self.assertEqual(redrawn[0][1], 1101)  # another seed
+            self.assertFalse((pic.parent / "s1.fg.png").exists())  # the old cut out went with the old picture
+
+    def test_an_article_shows_briefly_then_the_beat_has_its_own_pictures(self):
+        import make
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            page = folder / "page.png"
+            page.write_bytes(b"x")
+            ch = {"title": "c", "visuals": ["v"],
+                  "shots": [(f"source: {page} | en.wikipedia.org | | Wide shot of the river", 36, "beat one", []),
+                            ("Close shot of a sword", 12, "beat two", [])]}
+            words = [(k * 0.33, k * 0.33 + 0.3, "w") for k in range(48)]
+            fake = lambda prompts, folder, poses=None: [folder / f"pic{k}.jpg" for k in range(len(prompts))]
+            with mock.patch.object(make.visuals, "scenes", fake), mock.patch.object(make.motion, "prepare"), \
+                    mock.patch.object(make.motion, "air", return_value=None), \
+                    mock.patch.object(make.sound, "plan", return_value=([], [])), \
+                    mock.patch.object(make, "plan_fx", return_value=[]), \
+                    mock.patch.dict(os.environ, {"CLIPS": "0", "POSES": "0"}):
+                shots, _, _ = make.timeline(ch, 16.0, words, folder)
+        self.assertEqual(shots[0][0].suffix, ".json")
+        self.assertLessEqual(shots[0][1], make.SOURCE_MAX)
+        first_beat = [x[0].name for x in shots[1:] if x[0].name.startswith("pic") and x[0].name < "pic2"]
+        self.assertEqual(sorted(set(first_beat)), ["pic0.jpg", "pic1.jpg"])  # 36 words: two views of the scene
+        import qa
+        self.assertLessEqual(qa.longest_same(shots), 8.0)
+
+    def test_the_report_measures_all_fifteen_on_a_real_video(self):
+        import subprocess
+        import qa
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            subprocess.run([qa.FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=12:size=320x180:rate=24",
+                            "-f", "lavfi", "-i", "sine=frequency=300:duration=12", "-shortest", "-c:v", "libx264",
+                            "-c:a", "aac", str(folder / "final.mp4")], check=True)
+            (folder / "picture_check.json").write_text(json.dumps({"checked": 10, "fit": 9, "misses": []}))
+            page, a, b = Path("img/00/card_p.json"), Path("img/00/s1.jpg"), Path("img/00/s2.jpg")
+            kinds = {str(page): {"kind": "source", "title": "pakasiayouthforum.com"}}
+            shots = [[page, 3.0], [a, 3.0], [a.with_name("s1.p1.jpg"), 3.0], [b, 3.0]]
+            with mock.patch.object(qa, "side_by_side", lambda folder: []):
+                got = qa.report(folder, [(shots, ([], [], []))], 12.0, None, kinds)
+            text = (folder / "qa.md").read_text()
+            self.assertEqual(len(got), 15)
+            self.assertEqual(text.count(" ok |") + text.count(" FIX |"), 15)
+            self.assertEqual(got["longest same picture (s)"], 6.0)
+            self.assertEqual(got["time on article screenshots (%)"], 25.0)
+            self.assertEqual(got["different pictures per minute"], 10.0)
+            self.assertEqual(got["pictures that fit their line (%)"], 90.0)
+            self.assertEqual(got["pages from trusted sites (%)"], 0.0)
+            self.assertEqual(got["full screen cards per minute"], 0.0)
+
+    def test_a_screenshot_covered_by_a_dialog_is_refused(self):
+        sys.path.insert(0, str(ROOT / "documentary"))
+        import assets
+        text = "the battle of qadisiyyah began when the persian army crossed the river near the town " * 20
+        page = mock.Mock()
+        page.inner_text.return_value = text
+        page.evaluate.return_value = {"text": text, "covered": True}
+        self.assertFalse(assets.genuine(page, {"text": text})[0])
+        page.evaluate.return_value = {"text": "accept cookies personalize your experience sign in " * 5, "covered": False}
+        self.assertFalse(assets.genuine(page, {"text": text})[0])
+        page.evaluate.return_value = {"text": text, "covered": False}
+        self.assertTrue(assets.genuine(page, {"text": text})[0])
 
 
 class Reports(unittest.TestCase):

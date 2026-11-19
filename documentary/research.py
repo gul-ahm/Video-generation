@@ -51,6 +51,13 @@ EXPERT_SITES = (".edu", ".ac.uk", ".ac.in", ".ac.jp", "cambridge.org", "oup.com"
                 "wikipedia.org", "wikisource.org", "deremilitari.org", "worldhistory.org", "historynet.com", "historytoday.com",
                 "smithsonianmag.com", "nationalgeographic.com", "bbc.co.uk", "bbc.com", "history.com")
 SCHOLAR = re.compile(r"\b(historian|professor|prof\.|scholar|dr\.|chronicler|imam|shaykh|sheikh|ibn \w+)\b", re.I)
+def trusted(url):
+    """A page fit to show on screen as proof: an edited reference, a university or museum, a Sunni hadith site."""
+    host = re.sub(r"^https?://(www\.)?", "", url.lower()).split("/")[0]
+    return any(host.endswith(d) if d.startswith(".") else host == d or host.endswith("." + d)
+               for d in EXPERT_SITES + tuple(SUNNI["sites"]))
+
+
 # pages written by a language model are not sources
 SKIP_AI = ("grokipedia.com", "brightlearn.ai", "llmpedia")
 SKIP = SKIP_AI + ("youtube.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "pinterest.", "reddit.com",

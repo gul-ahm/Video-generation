@@ -196,7 +196,7 @@ The most useful settings in `.env`:
 ## Tests
 
 ```bash
-python -m unittest discover tests            # Drive uploads, the quality gate, kernel reports, the strict build
+python -m unittest discover tests            # Drive uploads, the 15 check gate, pictures, pages, kernel reports
 node --test cloud/cloudflare/worker.test.mjs # the worker: a whole video, stale runs, a full Kaggle, lost kernels
 ```
 
@@ -212,8 +212,14 @@ pushes every one of them and hears back from each.
    all at the same time. One machine doing all six took over 4 hours; side by side it is about the time of one
    chapter. Each leaves its clip and its plan on Drive.
 4. **join** (CPU): the chapters put together, quality check and YouTube pack. The video goes to your Drive folder and
-   the link to Telegram with the quality result and Yes and No buttons. A film that loses its cards, captions or
-   timing is not offered: it goes to Drive as `_held` and Telegram says which checks failed.
+   the link to Telegram with the quality result and Yes and No buttons. A film is offered only when all 15
+   quality checks pass; otherwise it goes to Drive as `_held` and Telegram says which checks failed.
+
+The 15 checks (`qa.py`) are the edit's ten (cuts, shot length, movement, captions and cards, sound, loudness,
+timing) and five for what the eye sees in a documentary: no picture on screen longer than 8 seconds, article
+pages at most a quarter of the film, 4 to 12 different pictures a minute, at least 90% of pictures judged by a model
+that sees to fit their own sentence and era (the GPU stage redraws the ones that do not, twice at most), and every
+page on screen from a reference work, a university, a museum or a Sunni hadith site.
 
 In the cloud the build is strict (`STRICT=1`): a card, an effect, a transition or a picture that cannot be made stops
 the stage with its reason, instead of the film quietly coming out without it. Each machine also checks its browser

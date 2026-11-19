@@ -227,11 +227,19 @@ def wide(prompt):
     return re.sub(r"\b(extreme )?close[ -]?up|medium( close)? shot|portrait", "full body shot", prompt, flags=re.I)
 
 
+# things a history picture must not show: the model drew cannons and top hats into a battle of 636
+LATER = "modern clothing, modern uniform, car, electric light, plastic, wristwatch, eyeglasses, skyscraper, asphalt road"
+GUNS = "firearm, gun, rifle, musket, cannon, artillery, top hat, cowboy hat, bowler hat"
+
+
 def style():
     name = os.getenv("STYLE", "reference")
     look, avoid, _ = STYLES.get(name, STYLES["reference"])
     look = os.getenv("ART_STYLE") or look
     trigger = os.getenv("TRIGGER", "")
+    year = re.search(r"\b(\d{3,4})\b", os.getenv("DOC_SUBJECT", ""))
+    if year:  # a film about a dated event: nothing from the centuries after it
+        avoid = ", ".join(x for x in (avoid, LATER, GUNS if int(year.group(1)) < 1300 else "") if x)
     return ", ".join(x for x in (trigger, look) if x), ", ".join(x for x in (trigger, SHORT.get(name, look)) if x), avoid
 
 

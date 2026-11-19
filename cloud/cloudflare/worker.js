@@ -221,7 +221,7 @@ async function unitFailed(env, job, s, key, u, why, retry = true) {
     return say(env, `Day ${job.day}: ${key} failed (${why.slice(0, 160)}). ` +
       (again.state === "pushed" ? "Running it once more." : "It runs once more when a Kaggle machine is free."));
   }
-  await jobFailed(env, job, s, `${key} failed: ${why.slice(0, 300)}`);
+  await jobFailed(env, job, s, retry ? `${key} failed: ${why.slice(0, 300)}` : why.slice(0, 900));
 }
 
 function readyText(e) {

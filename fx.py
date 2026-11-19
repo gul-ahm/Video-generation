@@ -425,7 +425,6 @@ def test():
     for kind, values in tries:
         got = frames(kind, values, out / kind)
         print(kind, "ok" if got else "failed")
-    from render import FFMPEG
     a, b = out / "a.mp4", out / "b.mp4"
     ffmpeg("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=30:d=1", "-pix_fmt", "yuv420p", a)
     ffmpeg("-f", "lavfi", "-i", "mandelbrot=s=1920x1080:r=30", "-t", 1, "-pix_fmt", "yuv420p", b)

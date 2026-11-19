@@ -11,7 +11,6 @@ Now:
      and the edge colours are re-estimated so no old background shines through (pymatting)
   5. the hole is painted by the picture model itself on Kaggle (SDXL inpainting in the same look), else OpenCV
 """
-import os
 import re
 
 import numpy as np

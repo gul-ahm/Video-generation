@@ -14,10 +14,14 @@ import os
 import re
 
 import assets
+import research
 import writer
 
 SPOKEN = 188
-GAP = int(os.getenv("DOC_SOURCE_GAP", "1"))  # beats between two article screenshots
+# beats between two article screenshots; at 1 nearly every other beat was a page and half the film was screenshots
+GAP = int(os.getenv("DOC_SOURCE_GAP", "4"))
+WORDS = int(os.getenv("WORDS_PER_BEAT", "22"))
+REFERENCE = ("wikipedia.org", "wikisource.org", "britannica.com", "worldhistory.org", "iranicaonline.org")  # one sentence or two per beat, each with its own picture
 
 OUTLINE = """Plan a {minutes} minute documentary: "{title}". It is built only from the research ledger below.
 {n} chapters that tell it as one story with rising stakes. The first chapter opens on the most gripping true moment
@@ -65,9 +69,13 @@ CHAPTER SO FAR
 CLAIMS
 {claims}"""
 
-SHOTS = """Documentary "{title}". For each numbered beat of narration, describe the one picture on screen:
-a realistic documentary photograph of exactly what the beat says, starting "Wide shot of" or "Close shot of":
-the place, the people as adults with their clothes, the objects, the year if it matters.
+SHOTS = """Documentary "{title}"{about}. For each numbered beat of narration, describe the one picture on screen:
+a realistic documentary photograph of exactly what that beat says, starting "Wide shot of" or "Close shot of":
+the place, the people as adults with their clothes, the objects. Begin every prompt with the year and the place
+(for example "636 CE, the plain of al-Qadisiyyah, Sasanian Persia:"), so the picture keeps to that time.
+Everything in it must exist in that year and place: weapons, armour, clothes, buildings, animals. Nothing from a
+later century (no firearms, no cannons, no top hats, no modern uniforms) and no generic stand-in (a treasure chest
+for "wealth", a lone thinker for "strategy").
 Literal, never a metaphor (no chess pieces, no animals, no children, no scales) and no text in the picture.
 People who are real and living are shown from behind or far away, never as a recognisable face.
 Return JSON: {{"prompts": ["...", "..."]}} with exactly {n} prompts.
@@ -99,7 +107,8 @@ def script(title, minutes, claims, sources, folder):
     chapters = plan["chapters"]
     words = minutes * SPOKEN // len(chapters)
     by_id = {c["id"]: c for c in claims}
-    shot_of = {s["id"]: s for s in sources if s.get("shot")}
+    # only pages from an edited reference, a university, a museum or a Sunni hadith site go on screen as proof
+    shot_of = {s["id"]: s for s in sources if s.get("shot") and research.trusted(s["url"])}
     summary = " | ".join(f"{i}. {c['title']}" for i, c in enumerate(chapters, 1))
     prev, used, cards = "(this is the opening)", set(), []
     md = [f"# {plan['title']}", f"thumb: {plan['thumb']}", ""]
@@ -124,12 +133,13 @@ def script(title, minutes, claims, sources, folder):
         text = f.read_text(encoding="utf-8").strip()
         prev = re.sub(r"\[\d+\]", "", text)[-500:]
 
-        beats = [b for par in writer.beats(text) for b in par]
+        beats = [b for par in writer.beats(text, WORDS) for b in par]
         f = parts / f"shots{i:02d}.json"
         if not f.exists():
             writer.say(f"picture list for chapter {i} of {len(chapters)}")
             clean = [re.sub(r"\s*\[\d+(?:,\s*\d+)*\]", "", b) for b in beats]
-            got = writer.llm(SHOTS.format(title=plan["title"], n=len(beats),
+            about = f" (about: {os.environ['DOC_SUBJECT']})" if os.getenv("DOC_SUBJECT") else ""
+            got = writer.llm(SHOTS.format(title=plan["title"], about=about, n=len(beats),
                                           beats="\n".join(f"{k}. {b}" for k, b in enumerate(clean, 1))),
                              as_json=True, temp=0.6, fast=True)["prompts"]
             f.write_text(json.dumps((got + [c["title"]] * len(beats))[:len(beats)], ensure_ascii=False), encoding="utf-8")
@@ -145,7 +155,10 @@ def script(title, minutes, claims, sources, folder):
             if src and since >= GAP:
                 used.add(src["id"])
                 cards.append((len(md), src, cid, by_id[cid].get("quotes", {}).get(str(src["id"]), "")))
-                pic, since = f"source: {src['shot']} | {src['site']} | {src.get('published', '')}", 0
+                # the beat keeps its picture too: the page shows briefly, then the scene it speaks of
+                # an encyclopedia's date is when its page was first made (Wikipedia showed 2002), so none is shown
+                date = "" if any(r in src["site"] for r in REFERENCE) else src.get("published", "")
+                pic, since = f"source: {src['shot']} | {src['site']} | {date} | {pic}", 0
             else:
                 since += 1
             md += [f"> {pic}", re.sub(r"\s*\[[\d,\s]+\]", "", beat)]
