@@ -597,7 +597,9 @@ def build(folder):
             voices = voice.narrate(s["chapters"], folder)
             plans = get_plans()
             on_kaggle(s, plans, folder)
-            if os.getenv("PICTURE_CHECK", "1") == "1":
+            # only the GPU stage checks: a chapter machine has no GPU to redraw on, and five of them checking the same
+            # pictures at once deleted the ones they disliked and spent the vision quota five times over
+            if os.getenv("PICTURE_CHECK", "1") == "1" and not os.getenv("RENDER_PART"):
                 check_pictures(s, plans, folder)
         else:  # the pictures need only the prompts and the moods, so Kaggle draws them while the Mac is still speaking
             drawing = ex.submit(lambda: on_kaggle(s, get_plans(), folder))

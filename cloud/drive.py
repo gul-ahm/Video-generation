@@ -3,6 +3,7 @@
 Drive keeps what one Kaggle stage hands to the next (job_<id>.tgz) and the finished videos; Telegram tells you.
 """
 import json
+import time
 from pathlib import Path
 
 import requests
@@ -68,17 +69,35 @@ def upload(path, name=None):
 
 
 def download(name, dst):
-    """Download <name> from the Drive folder to dst. False if it is not there."""
+    """Download <name> from the Drive folder to dst. False if it is not there. Drive sometimes stops sending in the
+    middle of a big file (a 400 MB job folder stalled at 226 MB); the stream then goes on from the byte it reached."""
     fid = find(name)
     if not fid:
         return False
-    with requests.get(f"{API}/{fid}", params={"alt": "media", "supportsAllDrives": "true"}, stream=True, timeout=600,
-                      headers={"Authorization": f"Bearer {token('drive')}"}) as r:
-        r.raise_for_status()
-        with open(dst, "wb") as f:
-            for chunk in r.iter_content(2 ** 20):
-                f.write(chunk)
-    return True
+    dst, size = Path(dst), None
+    dst.unlink(missing_ok=True)
+    for attempt in range(6):
+        have = dst.stat().st_size if dst.exists() else 0
+        if size is not None and have >= size:
+            return True
+        try:
+            with requests.get(f"{API}/{fid}", params={"alt": "media", "supportsAllDrives": "true"}, stream=True,
+                              timeout=(30, 120), headers={"Authorization": f"Bearer {token('drive')}",
+                                                          **({"Range": f"bytes={have}-"} if have else {})}) as r:
+                r.raise_for_status()
+                if have and r.status_code != 206:  # the range was not honoured: start over
+                    have = 0
+                size = have + int(r.headers.get("Content-Length", 0)) if r.headers.get("Content-Length") else None
+                with open(dst, "ab" if have else "wb") as f:
+                    for chunk in r.iter_content(2 ** 20):
+                        f.write(chunk)
+            if size is None or dst.stat().st_size >= size:
+                return True
+        except requests.RequestException as err:
+            print(f"  drive: {name} stopped at {dst.stat().st_size if dst.exists() else 0} bytes ({str(err)[:80]}), "
+                  "going on", flush=True)
+        time.sleep(5 * (attempt + 1))
+    raise SystemExit(f"Drive kept stopping in the middle of {name}")
 
 
 def delete(name):

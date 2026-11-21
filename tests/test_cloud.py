@@ -61,6 +61,43 @@ class Drive(unittest.TestCase):
             self.assertEqual(drive.upload(f)[0], "f1")
             self.assertEqual(calls, [0])
 
+    def test_a_download_that_stalls_goes_on_from_the_byte_it_reached(self):
+        import drive
+        import requests
+        body, asked = b"0123456789", []
+
+        class Stream:
+            def __init__(self, start):
+                self.start, self.status_code = start, 206 if start else 200
+                self.headers = {"Content-Length": str(len(body) - start)}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, n):
+                yield body[self.start:self.start + 4]
+                if not self.start:  # the first stream stops after four bytes, as Drive did at 226 MB
+                    raise requests.ConnectionError("Read timed out.")
+                yield body[self.start + 4:]
+
+        def get(url, headers=None, **kw):
+            start = int(headers.get("Range", "bytes=0-")[6:-1])
+            asked.append(start)
+            return Stream(start)
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(drive, "token", return_value="t"), \
+                mock.patch.object(drive, "find", return_value="f1"), mock.patch.object(drive.requests, "get", side_effect=get), \
+                mock.patch("time.sleep"):
+            self.assertTrue(drive.download("job.tgz", Path(d) / "job.tgz"))
+            self.assertEqual((Path(d) / "job.tgz").read_bytes(), body)
+        self.assertEqual(asked, [0, 4])
+
     def test_a_large_file_goes_up_in_pieces(self):
         import drive
         sizes = []
