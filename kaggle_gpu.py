@@ -239,16 +239,20 @@ def status(ref):
 
 
 def pictures(todo, moves):
-    """Draw [(prompt, seed, dst)] and pose frames [(prompt, seed, src, dst)] on Kaggle. Returns how many arrived."""
+    """Draw [(prompt, seed, dst)] and pose frames [(prompt, seed, src, dst)] on Kaggle. Returns how many arrived.
+    A picture may carry a fourth item, more to avoid: what the picture check found in the one drawn before."""
     if not todo or not ready():
         return 0
-    ids = {dst: f"p{k:04d}" for k, (_, _, dst) in enumerate(todo)}
+    ids = {t[2]: f"p{k:04d}" for k, t in enumerate(todo)}
     cut = lambda p: os.getenv("MOTION", "1") == "1" and cutout.subject(p)
-    jobs = [{"id": ids[dst], "seed": seed, "cut": cut(p), **dict(zip(("text", "avoid"), visuals.compose(p)))}
-            for p, seed, dst in todo]
+
+    def job(p, seed, dst, more=""):
+        text, avoid = visuals.compose(p)
+        return {"id": ids[dst], "seed": seed, "cut": cut(p), "text": text, "avoid": f"{more}, {avoid}" if more else avoid}
+    jobs = [job(*t) for t in todo]
     jobs += [{"id": f"{ids[src]}m{k}", "src": ids[src], "seed": seed, "cut": cut(p),
               **dict(zip(("text", "avoid"), visuals.compose(p)))} for k, (p, seed, src, dst) in enumerate(moves) if src in ids]
-    where = {j["id"]: dst for j, (_, _, dst) in zip(jobs, todo)}
+    where = {j["id"]: t[2] for j, t in zip(jobs, todo)}
     where.update({f"{ids[src]}m{k}": dst for k, (_, _, src, dst) in enumerate(moves) if src in ids})
     w, h = map(int, (os.getenv("SD_SIZE") or "1344x768").split("x"))
     settings = {"model": os.getenv("SD_MODEL", "lykon/dreamshaper-xl-lightning"), "lora": os.getenv("LORA", ""),

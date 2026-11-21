@@ -196,7 +196,7 @@ The most useful settings in `.env`:
 ## Tests
 
 ```bash
-python -m unittest discover tests            # Drive uploads, the 15 check gate, pictures, pages, kernel reports
+python -m unittest discover tests            # Drive, deploy, the 15 check gate, plan gate, picture check, kernel
 node --test cloud/cloudflare/worker.test.mjs # the worker: a whole video, stale runs, a full Kaggle, lost kernels
 ```
 
@@ -220,6 +220,23 @@ timing) and five for what the eye sees in a documentary: no picture on screen lo
 pages at most a quarter of the film, 4 to 12 different pictures a minute, at least 90% of pictures judged by a model
 that sees to fit their own sentence and era (the GPU stage redraws the ones that do not, twice at most), and every
 page on screen from a reference work, a university, a museum or a Sunni hadith site.
+
+Faults are found where they are made, not after a whole film:
+
+- **The picture check** runs on the GPU stage's own T4s with an open vision model (`vision_local.py`, Qwen2.5-VL),
+  so it needs no API calls; the Gemini key only answers what that model could not. It looks for four faults a
+  viewer notices (something from a later age, writing, a deformed body, a scene unrelated to the line) and the code
+  decides. A redraw keeps out what was found: "folding chairs" goes into that picture's negative prompt.
+- **Every verdict is kept** per picture with its md5 in `picture_check_cache.json`, on Drive after every ten. A check
+  that stops goes on from the picture it reached; only a redrawn picture is looked at again.
+- **The plan gate**: before any chapter is rendered, the GPU stage works out every chapter's shots with nothing
+  drawn and measures the twelve checks the edit plan decides. A film that would be held stops there with the checks
+  it misses, instead of after an hour on five machines. Only loudness and movement wait for the finished film.
+- **Small tests first**: `python cloud.py check 10` runs the picture check alone on the test film's first ten
+  pictures (minutes, nothing drawn), before a whole video depends on a change.
+- **One way to put code on the Mac**: `python cloud.py deploy [commit]` takes a GitHub commit, writes every file but
+  the Mac's own (`.env.example`, `plan.json`, `topics.txt`, the runner), compares each byte for byte, runs the tests
+  (and puts the old files back if they fail), then syncs the datasets and, when it changed, the worker.
 
 In the cloud the build is strict (`STRICT=1`): a card, an effect, a transition or a picture that cannot be made stops
 the stage with its reason, instead of the film quietly coming out without it. Each machine also checks its browser

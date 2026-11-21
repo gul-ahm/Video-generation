@@ -3,9 +3,11 @@
 The pieces that broke in the cloud runs: the empty Drive upload, the quality gate, a kernel report that has to say
 what failed, the card browser that was left half started, the strict build.
 """
+import io
 import json
 import os
 import sys
+import tarfile
 import tempfile
 import types
 import unittest
@@ -151,6 +153,51 @@ class Sync(unittest.TestCase):
             up.assert_not_called()
 
 
+class Deploy(unittest.TestCase):
+    def commit(self, files):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as t:
+            for name, text in files.items():
+                data = text.encode()
+                info = tarfile.TarInfo(f"Video-generation-abc123/{name}")
+                info.size = len(data)
+                t.addfile(info, io.BytesIO(data))
+        return buf.getvalue()
+
+    def deploy(self, root, files, tests_pass=True):
+        import cloud
+        tgz = self.commit(files)
+
+        def get(url, timeout):
+            return types.SimpleNamespace(json=lambda: {"sha": "abc1234567"}, content=tgz, raise_for_status=lambda: None)
+        ran = types.SimpleNamespace(returncode=0 if tests_pass else 1, stderr="Ran 3 tests\n\nOK" if tests_pass else "FAILED")
+        with mock.patch.object(cloud, "ROOT", root), mock.patch("requests.get", get), \
+                mock.patch.object(cloud.subprocess, "run", return_value=ran), mock.patch.object(cloud, "sync") as synced:
+            cloud.deploy("main")
+        return synced
+
+    def test_the_commit_is_written_and_the_keys_on_the_mac_stay(self):
+        root = Path(tempfile.mkdtemp())
+        (root / ".env.example").write_text("LLM_API_KEY=the-real-key\n")
+        (root / "make.py").write_text("old")
+        synced = self.deploy(root, {".env.example": "LLM_API_KEY=\n", "make.py": "new", "cloud/kernel.py": "k"})
+        self.assertEqual((root / ".env.example").read_text(), "LLM_API_KEY=the-real-key\n")
+        self.assertEqual(((root / "make.py").read_text(), (root / "cloud/kernel.py").read_text()), ("new", "k"))
+        self.assertEqual((root / "DEPLOYED").read_text().strip(), "abc1234567")
+        synced.assert_called_once()
+        with tarfile.open(next((root / "_ref").glob("before_*.tgz"))) as b:
+            self.assertEqual(b.extractfile("make.py").read(), b"old")
+
+    def test_failed_tests_put_the_old_files_back(self):
+        root = Path(tempfile.mkdtemp())
+        (root / "make.py").write_text("old")
+        with self.assertRaisesRegex(SystemExit, "tests failed"):
+            self.deploy(root, {"make.py": "broken", "new_file.py": "x"}, tests_pass=False)
+        self.assertEqual((root / "make.py").read_text(), "old")
+        self.assertFalse((root / "new_file.py").exists())
+        self.assertFalse((root / "DEPLOYED").exists())
+
+
 class Gate(unittest.TestCase):
     def check(self, text):
         with tempfile.TemporaryDirectory() as d:
@@ -251,7 +298,7 @@ class Checks(unittest.TestCase):
 
             def draw(todo, moves):
                 redrawn.extend(todo)
-                for _, _, dst in todo:
+                for _, _, dst, _ in todo:
                     dst.write_bytes(b"y")
 
             script = {"title": "t", "chapters": [{"shots": [("Wide shot", 10, "the line", [])]}]}
@@ -264,6 +311,8 @@ class Checks(unittest.TestCase):
             got = json.loads((folder / "picture_check.json").read_text())
             self.assertEqual((got["checked"], got["fit"], got["misses"]), (1, 1, []))
             self.assertEqual(redrawn[0][1], 1101)  # another seed
+            self.assertIn("a cannon", redrawn[0][3])  # and what was wrong is kept out of the new one
+            self.assertIn("firearms", redrawn[0][3])
             self.assertFalse((pic.parent / "s1.fg.png").exists())  # the old cut out went with the old picture
 
     def checked(self, gpu_answers, gemini_answers, cache=None, pictures=3):
@@ -319,10 +368,28 @@ class Checks(unittest.TestCase):
         self.assertEqual((gpu, gemini, got["fit"]), (["s2.jpg"], [], 3))
 
     def test_a_picture_drawn_again_is_looked_at_again(self):
-        import make
         stale = lambda pics: {p.name: {"md5": "an older picture", "answer": '{"later": ""}'} for p in pics}
         gpu, _, _ = self.checked({f"s{k}.jpg": '{"later": ""}' for k in range(3)}, {}, cache=stale)
         self.assertEqual(gpu, ["s0.jpg", "s1.jpg", "s2.jpg"])
+
+    def test_a_film_that_would_be_held_is_stopped_before_any_chapter_is_rendered(self):
+        import make
+        d = Path(tempfile.mkdtemp())
+        (d / "picture_check.json").write_text(json.dumps({"checked": 10, "fit": 10, "misses": []}))
+        pics = [d / f"s{k}.jpg" for k in range(15)]
+        drawn = []
+
+        def timeline(ch, dur, words, folder, plan, first):  # fifteen pictures of 4 s, no card: 0 cards a minute
+            self.assertEqual(os.environ.get("PLAN_ONLY"), "1")  # nothing is drawn while the plan is measured
+            return [(p, 4.0, 0.0, {"caption": {"title": "x"}}) for p in pics], [], ([0] * 10, [(0, 60)], [])
+        with mock.patch.object(make, "timeline", timeline), mock.patch.object(make, "STRICT", True), \
+                mock.patch.object(make.fx, "frames", lambda *a: drawn.append(a)):
+            with self.assertRaisesRegex(SystemExit, r"plan gate: .*full screen cards per minute: 0.00 FIX"):
+                make.plan_gate({"chapters": [{"title": "c"}]}, [{}], [("a.wav", 60 - make.render.PAD, [])], d)
+        got = json.loads((d / "plan_gate.json").read_text())
+        self.assertEqual(len(got["measured"]), 12)
+        self.assertEqual((got["measured"]["different pictures per minute"], drawn), (15.0, []))
+        self.assertNotIn("PLAN_ONLY", os.environ)
 
     def test_an_article_shows_briefly_then_the_beat_has_its_own_pictures(self):
         import make

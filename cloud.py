@@ -1,5 +1,6 @@
 """Run History Studio on Kaggle, so no computer has to stay on.
 
+  python cloud.py deploy [commit]              the code of a GitHub commit onto this Mac, checked, tested, then synced
   python cloud.py sync                         upload the code, the assets and the secrets as private Kaggle datasets
   python cloud.py day 1                        start day 1 of plan.json now (the worker pushes every stage after it)
   python cloud.py day 1 gpu                    the same, from a later stage (its folder is already on Drive)
@@ -14,8 +15,11 @@
 Run sync again after changing the code, the voice, the music or a key.
 """
 import hashlib
+import io
 import json
+import os
 import re
+import shutil
 import time
 from datetime import datetime, timedelta, timezone
 import subprocess
@@ -33,6 +37,9 @@ CODE = ["*.py", "dashboard.html", "requirements.txt", "topics.txt", "samples", "
 ASSETS = ["assets/my_voice.wav", "assets/my_voice.ref.wav", "assets/music", "assets/sfx", "assets/fonts",
           "assets/hyperframes", "assets/maps"]
 SKIP = ("__pycache__", ".DS_Store", ".hyperframes", "node_modules")
+REPO = "gul-ahm/Video-generation"
+# the Mac's own files, never replaced by a deploy: the keys, the channel plan, the topics, the runner that runs it
+MINE = {".env.example", "plan.json", "topics.txt", "_runner.sh", "History Studio.command"}
 TEST = ("The Battle of al-Qadisiyyah: Four Days That Ended an Empire", "Battle of al-Qadisiyyah, 636")  # cloud.py test
 
 
@@ -82,6 +89,54 @@ def stamp(patterns=CODE, extra=()):
         if f.is_file() and not any(x in str(f) for x in SKIP):
             h.update(str(f.name if f.is_absolute() and ROOT not in f.parents else f.relative_to(ROOT)).encode() + f.read_bytes())
     return h.hexdigest()[:12]
+
+
+def deploy(ref="main"):
+    """The code of one GitHub commit onto the Mac, instead of files copied by hand (a copied archive once put the
+    empty .env.example of the repository over the keys, and a stale copy once ran instead of the new one). Every
+    file of the commit but MINE is written, then read back and compared byte for byte; the files it replaced are
+    kept in _ref/ and put back if the tests fail. Then sync, and the worker when worker.js changed."""
+    import requests
+    sha = requests.get(f"https://api.github.com/repos/{REPO}/commits/{ref}", timeout=60).json()["sha"]
+    r = requests.get(f"https://codeload.github.com/{REPO}/tar.gz/{sha}", timeout=600)
+    r.raise_for_status()
+    backup = ROOT / "_ref" / f"before_{sha[:7]}_{time.strftime('%m%d_%H%M')}.tgz"
+    backup.parent.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory() as d:
+        with tarfile.open(fileobj=io.BytesIO(r.content)) as t:
+            t.extractall(d, filter="data")
+        src = next(Path(d).iterdir())
+        files = {str(f.relative_to(src)): f for f in src.rglob("*") if f.is_file()}
+        files = {k: f for k, f in files.items() if k not in MINE}
+        changed = [k for k, f in files.items() if not (ROOT / k).exists() or (ROOT / k).read_bytes() != f.read_bytes()]
+        with tarfile.open(backup, "w:gz") as b:
+            for k in changed:
+                if (ROOT / k).exists():
+                    b.add(ROOT / k, arcname=k)
+        for k in changed:  # a new file renamed into place: a running script keeps reading the one it opened
+            (ROOT / k).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(files[k], ROOT / f"{k}.new")
+            os.replace(ROOT / f"{k}.new", ROOT / k)
+        wrong = [k for k, f in files.items() if (ROOT / k).read_bytes() != f.read_bytes()]
+        if wrong:
+            raise SystemExit(f"deploy: {len(wrong)} files differ after writing: {wrong[:5]}")
+    print(f"  deploy: {sha[:7]}, {len(changed)} of {len(files)} files changed, all match the commit", flush=True)
+    tests = subprocess.run([sys.executable, "-m", "unittest", "discover", "tests"], cwd=ROOT, capture_output=True,
+                           text=True)
+    print("  tests:", (tests.stderr.strip().splitlines() or ["none ran"])[-1], flush=True)
+    if tests.returncode:
+        with tarfile.open(backup) as b:
+            before = set(b.getnames())
+            b.extractall(ROOT, filter="data")
+        for k in changed:
+            if k not in before:
+                (ROOT / k).unlink()
+        raise SystemExit(f"deploy: the tests failed, the files from before are back\n{tests.stderr[-1500:]}")
+    (ROOT / "DEPLOYED").write_text(f"{sha}\n")
+    sync()
+    if "cloud/cloudflare/worker.js" in changed:
+        import worker
+        worker.deploy()
 
 
 def sync():
@@ -167,7 +222,9 @@ def plan_day(n):
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if args[:1] == ["sync"]:
+    if args[:1] == ["deploy"] and len(args) in (1, 2):
+        deploy(args[1] if len(args) == 2 else "main")
+    elif args[:1] == ["sync"]:
         sync()
     elif args[:1] == ["send"] and len(args) == 2:
         send(args[1])

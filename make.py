@@ -38,6 +38,7 @@ OUT = Path("output")
 # in the cloud nobody watches the log: a card, an effect or a picture that cannot be made stops the stage with its
 # reason (the worker runs it once more, then reports), instead of a film quietly made without it
 STRICT = os.getenv("STRICT") == "1"
+PLAN_ONLY = lambda: os.getenv("PLAN_ONLY") == "1"  # plan_gate: shots and sound worked out, nothing drawn
 
 
 def folder_for(topic):
@@ -139,6 +140,8 @@ _labels = {"n": 0}
 
 def card_frames(card, slots, out):
     """A HyperFrames card's frames, tried twice: a busy machine can miss one browser start."""
+    if PLAN_ONLY():
+        return out
     try:
         return hf.render(card, slots, HF_SECONDS, out)
     except Exception:
@@ -219,7 +222,7 @@ def kinetic(e, folder, want=None):
         word = said if said.lower() in title.lower() and len(said) > 3 else max(words, key=len, default="")
         kind, values = "marker", {"text": title, "word": word}
     out = folder / "fx" / f"{kind}_{fx.key(kind, values)}"
-    got = fx.frames(kind, values, out)
+    got = out if PLAN_ONLY() else fx.frames(kind, values, out)
     return {**e, "kind": "hfo", "fx": kind, "card": f"hyperframes {kind}", "frames": str(got), "step": 1} if got else None
 
 
@@ -339,6 +342,24 @@ def faults(answer):
     return "; ".join(f"{k}: {got[k]}" for k in FAULTS if str(got.get(k) or "").strip())[:200]
 
 
+# what to keep out of a picture drawn again, by the fault the check found in the one before
+AVOID = {"later": "{what}, modern objects, modern furniture, firearms, cannons, machinery, vehicles",
+         "writing": "{what}, text, letters, words, writing, calligraphy, inscription, signs, numbers",
+         "body": "deformed, extra limbs, extra fingers, missing limbs, melted face, bad anatomy"}
+
+
+def avoid_of(fault):
+    """The negative prompt for a redraw from a verdict like "later: folding chairs; writing: arabic letters": the
+    thing the check saw, by name, and its kind. Before, every redraw got the same "nothing from a later age" and
+    the same chairs came back."""
+    out = []
+    for part in fault.split("; "):
+        key, _, what = part.partition(": ")
+        if key in AVOID:
+            out.append(AVOID[key].format(what=re.sub(r"[^\w ,'-]", " ", what)[:80]).strip(", "))
+    return ", ".join(out)
+
+
 def judge(todo, items, subject, cache_file):
     """An answer for every picture in todo, written to cache_file as it comes: first by the open model on this
     machine's GPUs (vision_local.py, no API calls), then by the Gemini key for any it could not answer. A picture
@@ -400,13 +421,35 @@ def check_pictures(s, plans, folder):
         for path in todo:  # the picture and everything made from it (cut out layers, pose frames)
             for f in path.parent.glob(f"{path.stem}.*"):
                 f.unlink()
-        kaggle_gpu.pictures([(f"{items[x][0]}, true to {subject}, nothing from a later age, no writing",
-                              items[x][2] + 1000 * (attempt + 1), x) for x in todo], [])
+        kaggle_gpu.pictures([(f"{items[x][0]}, true to {subject}", items[x][2] + 1000 * (attempt + 1), x,
+                              avoid_of(verdict[x])) for x in todo], [])
     (folder / "picture_check.json").write_text(json.dumps({
         "checked": len(items), "fit": len(items) - len(todo),
         "misses": [{"file": x.name, "line": items[x][1][:160], "problem": verdict[x],
                     "by": cache.get(x.name, {}).get("by", "")} for x in todo]},
         indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+def plan_gate(s, plans, voices, folder):
+    """The twelve checks the edit plan decides (qa.measure: cuts, cards, captions, sound, pictures, pages), worked out
+    on the GPU machine before any chapter is rendered: every chapter's shots as its chapter machine will make them,
+    with nothing drawn. A film that would be held is stopped here, with the checks it misses, instead of after an
+    hour of rendering on five machines; only loudness and movement still need the finished film."""
+    os.environ["PLAN_ONLY"] = "1"
+    try:
+        chapters = []
+        for i, (ch, (_, dur, words)) in enumerate(zip(s["chapters"], voices)):
+            _labels["n"] = _kinetic["n"] = 0  # each chapter machine starts these counts again
+            shots, _, mix = timeline(ch, dur, words, folder / "img" / f"{i:02d}", plans[i], first=i == 0)
+            chapters.append((shots, mix))
+    finally:
+        os.environ.pop("PLAN_ONLY")
+    got = qa.measure(folder, chapters, sum(dur + render.PAD for _, dur, _ in voices))
+    miss = qa.misses(got)
+    (folder / "plan_gate.json").write_text(json.dumps({"measured": got, "misses": miss}, indent=1), encoding="utf-8")
+    print(f"  plan: {len(got) - len(miss)} of {len(got)} checks pass before rendering", flush=True)
+    if miss and STRICT:
+        raise SystemExit("plan gate: the film would be held, so nothing is rendered. " + "; ".join(miss))
 
 
 def source_card(line, folder):
@@ -456,7 +499,7 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
     for (p, i, _), pic in zip(flat, visuals.scenes([f[0] for f in flat], folder, [f[2] for f in flat])):
         if pic:
             views[i].append(pic)
-            for x in [pic, *visuals.pose_files(pic)]:
+            for x in [pic, *visuals.pose_files(pic)] if not PLAN_ONLY() else []:
                 motion.prepare(x, p)
     base = [views[i][0] if views[i] else None for i in range(len(prompts))]
     pool, stock_credits = ([], []) if any(base) or real else visuals.stock(ch["visuals"], sum(parts), folder)
@@ -654,6 +697,7 @@ def build(folder):
             # pictures at once deleted the ones they disliked and spent the vision quota five times over
             if os.getenv("PICTURE_CHECK", "1") == "1" and not os.getenv("RENDER_PART"):
                 check_pictures(s, plans, folder)
+                plan_gate(s, plans, voices, folder)
         else:  # the pictures need only the prompts and the moods, so Kaggle draws them while the Mac is still speaking
             drawing = ex.submit(lambda: on_kaggle(s, get_plans(), folder))
             voices = voice.narrate(s["chapters"], folder)

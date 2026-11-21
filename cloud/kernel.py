@@ -167,21 +167,25 @@ def work(stage, **extra):
         for line in p.stdout:
             print(line, end="", flush=True)
             tail.append(line.rstrip())
-            if line.strip().startswith(STEPS) and re.search(r"took|done|drawn|fit their line|^screenshots:|^script:|^vision",
-                                                            line.strip()):
-                hook("progress", line=line.strip())
-            if line.strip().startswith(("pictures: ", "vision: ")):
+            said_line = line.strip()
+            if said_line.startswith(STEPS) and re.search(SAY, said_line):
+                hook("progress", line=said_line)
+            if said_line.startswith(("pictures: ", "vision: ")):
                 checks("put")
     if p.returncode:
         said = [l for l in tail if l.strip() and not l.startswith(" " * 4)]
         busy = [l for l in said if l.startswith("service busy:")]
         if busy:
             raise Busy(busy[-1][:600])
+        held = [l for l in said if l.startswith(("plan gate:", "SystemExit: plan gate:"))]
+        if held:  # the same plan gives the same film: not run again, the reason goes to Telegram
+            raise Quality(held[-1].removeprefix("SystemExit: ")[:600])
         raise RuntimeError(" | ".join(said[-3:])[-400:] or f"doc.py exit {p.returncode}")
 
 
 # the lines of a build that say how far it is
-STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "pictures: ", "vision models:", "render ", "done:")
+SAY = r"took|done|drawn|fit their line|^screenshots:|^script:|^vision|before rendering"
+STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "pictures: ", "vision models:", "plan: ", "render ", "done:")
 
 CHECKS = 15  # qa.py's checks; a film is offered for approval only when every one passes
 

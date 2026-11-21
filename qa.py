@@ -132,11 +132,12 @@ def side_by_side(folder):
             "| video | cuts per minute | frames with movement (%) | longest still moment (s) |", "|---|---|---|---|", *rows, ""]
 
 
-def report(folder, chapters, total, laps=None, kinds=None):
-    """chapters: [(shots, (events, sections, scenes))] as make.py built them; laps: seconds per step; kinds: card
-    path -> its spec, for cards drawn on another machine."""
-    video = folder / "final.mp4"
-    m = motion(frames(video))
+FROM_VIDEO = ("frames with movement (%)", "loudness (LUFS)", "longest still moment (s)")
+
+
+def measure(folder, chapters, total, kinds=None):
+    """The checks that the edit plan alone decides (every one but FROM_VIDEO), from the shots and the sound plan:
+    known before any chapter is rendered (make.py plan_gate), and the same numbers the final report shows."""
     kinds = kinds or {}
     shots = [s for ch, _ in chapters for s in ch]
     lens = [s[1] for s in shots]
@@ -151,23 +152,36 @@ def report(folder, chapters, total, laps=None, kinds=None):
     events = sum(len(m[0]) for _, m in chapters)
     music = sum(end - start for _, m in chapters for start, end, *_ in m[1])
     minutes = total / 60
-    got = {
+    return {
         "cuts per minute": len(shots) / minutes,
         "median shot (s)": float(np.median(lens)),
-        "frames with movement (%)": m["moving"],
         "time with caption or card (%)": covered / total * 100,
         "full screen cards per minute": cards / minutes,
         "sound effects per minute": events / minutes,
         "music under the voice (%)": min(100.0, music / total * 100),
-        "loudness (LUFS)": loudness(video),
         "timing error (s)": timing(chapters),
-        "longest still moment (s)": m["still"],
         "longest same picture (s)": longest_same(shots),
         "time on article screenshots (%)": sum(s[1] for s in pages) / total * 100,
         "different pictures per minute": len({root(s[0]) for s, k in zip(shots, what) if k == "picture"}) / minutes,
         "pictures that fit their line (%)": check["fit"] / max(1, check["checked"]) * 100 if check else 0.0,
         "pages from trusted sites (%)": sum(map(research.trusted, outlets)) / len(outlets) * 100 if outlets else 100.0,
     }
+
+
+def misses(got):
+    """The checks out of their target, as "name: value FIX (target lo to hi)"."""
+    return [f"{k}: {v:.2f} FIX (target {TARGETS[k][0]} to {TARGETS[k][1]})" for k, v in got.items()
+            if not TARGETS[k][0] <= v <= TARGETS[k][1]]
+
+
+def report(folder, chapters, total, laps=None, kinds=None):
+    """chapters: [(shots, (events, sections, scenes))] as make.py built them; laps: seconds per step; kinds: card
+    path -> its spec, for cards drawn on another machine."""
+    video = folder / "final.mp4"
+    m = motion(frames(video))
+    minutes = total / 60
+    got = {**measure(folder, chapters, total, kinds), "frames with movement (%)": m["moving"],
+           "loudness (LUFS)": loudness(video), "longest still moment (s)": m["still"]}
     rows = ["| check | this video | target | reference |", "|---|---|---|---|"]
     passed = 0
     for name, (lo, hi, ref) in TARGETS.items():
