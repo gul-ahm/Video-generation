@@ -524,6 +524,17 @@ class Checks(unittest.TestCase):
             self.vision(answer, listed=())
         self.assertLessEqual(len(probes), 3 * 2, "one look at the start and at most one more")
 
+    def test_once_the_api_is_down_no_other_picture_waits_ten_minutes_again(self):
+        import writer
+        from PIL import Image
+        pic = Path(tempfile.mkdtemp()) / "p.jpg"
+        Image.new("RGB", (32, 18)).save(pic)
+        with mock.patch.object(writer, "_eyes", {"down": "service busy: no model could look at x.jpg", "live": ["a"]}), \
+                mock.patch.object(writer, "_client", object()), mock.patch("time.sleep") as slept:
+            with self.assertRaisesRegex(SystemExit, "service busy"):
+                writer.see("fits?", pic)
+        slept.assert_not_called()
+
     def test_a_screenshot_covered_by_a_dialog_is_refused(self):
         sys.path.insert(0, str(ROOT / "documentary"))
         import assets

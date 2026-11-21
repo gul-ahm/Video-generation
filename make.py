@@ -381,8 +381,13 @@ def judge(todo, items, subject, cache_file):
         with lock:
             cache[path.name] = {"md5": md5(path), "answer": json.dumps(answer), "by": "gemini"}
             cache_file.write_text(json.dumps(cache, ensure_ascii=False))
-    with ThreadPoolExecutor(3) as ex:
+    # the first picture the API cannot answer ends the check: before, the pool went on with every other picture,
+    # ten minutes each, and a GPU machine stayed busy for hours after the answer was already known
+    ex = ThreadPoolExecutor(3)
+    try:
         list(ex.map(look, rest))
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
     return cache
 
 

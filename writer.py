@@ -367,6 +367,8 @@ def see(prompt, image):
     lock = see.__dict__.setdefault("lock", threading.Lock())
     why = {}
     for i, pause in enumerate((0, 30, 90, 180, 300)):
+        if _eyes.get("down"):  # another picture already waited ten minutes for nothing: no second wait
+            raise SystemExit(_eyes["down"])
         time.sleep(pause)
         with lock:  # after a busy round the API is asked again which models answer, by one thread for all
             models = eyes(refresh=i > 0 and time.time() - _eyes.get("at", 0) > 60)
@@ -396,8 +398,9 @@ def see(prompt, image):
         now = datetime.now(ZoneInfo("America/Los_Angeles"))  # the free calls come back at midnight in California
         resets = [int((now.replace(hour=0, minute=0, second=0) + timedelta(days=1) - now).total_seconds())]
     wait = f" wait={min(resets)}" if resets and (spent or not _eyes.get("live")) else ""
-    raise SystemExit(f"service busy:{wait} no model could look at " + Path(image).name + " for ten minutes; " +
-                     "; ".join(f"{m}: {w}" for m, w in why.items())[:600])
+    _eyes["down"] = (f"service busy:{wait} no model could look at " + Path(image).name + " for ten minutes; " +
+                     "; ".join(f"{m}: {w}" for m, w in why.items()))[:700]
+    raise SystemExit(_eyes["down"])
 
 
 def ask(model, prompt, temp, extra, limit):
