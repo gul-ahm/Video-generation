@@ -148,15 +148,19 @@ def work(stage, **extra):
         for line in p.stdout:
             print(line, end="", flush=True)
             tail.append(line.rstrip())
-            if line.strip().startswith(STEPS) and re.search(r"took|done|drawn|fit their line|^screenshots:|^script:", line.strip()):
+            if line.strip().startswith(STEPS) and re.search(r"took|done|drawn|fit their line|^screenshots:|^script:|^vision",
+                                                            line.strip()):
                 hook("progress", line=line.strip())
     if p.returncode:
         said = [l for l in tail if l.strip() and not l.startswith(" " * 4)]
+        busy = [l for l in said if l.startswith("service busy:")]
+        if busy:
+            raise Busy(busy[-1][:600])
         raise RuntimeError(" | ".join(said[-3:])[-400:] or f"doc.py exit {p.returncode}")
 
 
 # the lines of a build that say how far it is
-STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "pictures: ", "render ", "done:")
+STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "pictures: ", "vision models:", "render ", "done:")
 
 CHECKS = 15  # qa.py's checks; a film is offered for approval only when every one passes
 
@@ -197,6 +201,11 @@ def deliver():
 
 class Quality(Exception):
     """A film made but not good enough to offer: reported, not run again (the same input gives the same film)."""
+
+
+class Busy(Exception):
+    """An outside service (the vision API) down for ten minutes: nothing is wrong with the video, so the worker runs
+    the stage again later instead of counting it as a failure. What was made is on Drive already."""
 
 
 def hook(event, **extra):
@@ -272,7 +281,8 @@ def main():
     except BaseException as err:
         sys.path.insert(0, str(HOME / "cloud"))
         try:
-            hook("failed", error=str(err)[:400], kind="quality" if isinstance(err, Quality) else "error")
+            kind = "quality" if isinstance(err, Quality) else "busy" if isinstance(err, Busy) else "error"
+            hook("failed", error=str(err)[:600], kind=kind)
         except Exception as lost:  # the failure came before the code was unpacked: the worker's watch notices it
             print(f"  could not report the failure ({lost})", flush=True)
         raise

@@ -275,30 +275,67 @@ class Checks(unittest.TestCase):
             self.assertEqual(got["pages from trusted sites (%)"], 0.0)
             self.assertEqual(got["full screen cards per minute"], 0.0)
 
-    def test_a_busy_vision_model_is_waited_out_not_counted_as_down(self):
+    def vision(self, answer, listed=("gemini-9-flash",), env=None):
+        """writer.see with a fake API: answer(model, is_probe) returns the text or raises."""
         import writer
         calls = []
 
-        class Busy(Exception):
-            pass
+        def create(model, messages, **kw):
+            probe = "ok" in messages[0]["content"][0]["text"]
+            calls.append((model, probe))
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(
+                content=answer(model, probe)))])
 
-        def create(model, **kw):
-            calls.append(model)
-            if len(calls) <= 3:  # every model busy in the first round, as on the test film's night
-                raise Busy("503 UNAVAILABLE: this model is currently experiencing high demand")
-            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content='{"fits": true}'))])
+        client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)),
+                                       models=types.SimpleNamespace(list=lambda: [types.SimpleNamespace(id=f"models/{m}")
+                                                                                  for m in listed]))
+        env = {"LLM_FAST": "a", "LLM_MODEL": "b", "LLM_FALLBACKS": "c", "LLM_VISION": "", "LLM_VISION_RPM": "6000",
+               **(env or {})}
+        d = tempfile.mkdtemp()
+        from PIL import Image
+        pic = Path(d) / "p.jpg"
+        Image.new("RGB", (64, 36)).save(pic)
+        with mock.patch.object(writer, "_client", client), mock.patch.object(writer, "_eyes", {}), \
+                mock.patch.dict(os.environ, env), mock.patch("time.sleep") as slept:
+            try:
+                return writer.see("fits?", pic), calls, slept
+            except SystemExit as err:
+                return str(err), calls, slept
 
-        client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
-        with tempfile.TemporaryDirectory() as d:
-            from PIL import Image
-            pic = Path(d) / "p.jpg"
-            Image.new("RGB", (64, 36)).save(pic)
-            env = {"LLM_FAST": "a", "LLM_MODEL": "b", "LLM_FALLBACKS": "c", "LLM_VISION": "", "LLM_VISION_RPM": "6000"}
-            with mock.patch.object(writer, "_client", client), mock.patch.dict(os.environ, env), \
-                    mock.patch("time.sleep") as slept:
-                self.assertEqual(writer.see("fits?", pic), {"fits": True})
-        self.assertEqual(calls, ["a", "b", "c", "a"])
-        self.assertIn(30, [c.args[0] for c in slept.call_args_list])  # a pause before the second round
+    def test_a_retired_or_silent_model_is_left_out_and_a_listed_one_found(self):
+        from openai import NotFoundError
+        gone = NotFoundError("404 no longer available", response=mock.Mock(status_code=404, request=None), body=None)
+
+        def answer(model, probe):
+            if model == "a":
+                raise gone  # retired, as gemini-2.5-flash-lite
+            if model == "b":
+                raise TimeoutError()  # hangs, as gemini-flash-latest
+            if model == "c":
+                raise Exception("503 UNAVAILABLE high demand")
+            return '{"ok": true}' if probe else '{"fits": true}'
+        got, calls, _ = self.vision(answer, listed=("gemini-9-flash", "gemini-9-flash-tts", "imagen-4"))
+        self.assertEqual(got, {"fits": True})
+        self.assertEqual([m for m, probe in calls if not probe], ["gemini-9-flash"])
+        self.assertNotIn("gemini-9-flash-tts", [m for m, _ in calls])
+
+    def test_a_busy_round_is_waited_out_then_every_model_is_named(self):
+        busy = {"n": 0}
+
+        def answer(model, probe):
+            if probe:
+                return '{"ok": true}'
+            busy["n"] += 1
+            if busy["n"] <= 3:  # all three busy in the first round, as on the test film's night
+                raise Exception("503 UNAVAILABLE: high demand")
+            return '{"fits": false}'
+        got, _, slept = self.vision(answer, listed=())
+        self.assertEqual(got, {"fits": False})
+        self.assertIn(30, [c.args[0] for c in slept.call_args_list])
+        got, _, _ = self.vision(lambda m, probe: '{"ok": true}' if probe else (_ for _ in ()).throw(Exception("503 busy")),
+                                listed=())
+        self.assertTrue(got.startswith("service busy:"), got)
+        self.assertIn("a: 503 busy", got)
 
     def test_a_screenshot_covered_by_a_dialog_is_refused(self):
         sys.path.insert(0, str(ROOT / "documentary"))

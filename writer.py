@@ -130,7 +130,7 @@ Return JSON:
   "description": "2 short paragraphs that hook the viewer and use the main search keywords naturally",
   "tags": ["15 to 20 tags"]}}"""
 
-FALLBACKS = "gemini-3.1-flash-lite,gemini-2.5-flash-lite"
+FALLBACKS = "gemini-3.1-flash-lite,gemini-3.5-flash-lite"
 _client = None
 _fails = Counter()
 _missing = set()
@@ -300,13 +300,50 @@ def llm(prompt, as_json=False, temp=0.8, fast=False):
 
 
 _seen = []  # times of the last calls to a model that sees, shared by every thread
+_eyes = {}  # the models that answered a picture in this run, fastest first, and why the others were dropped
+
+
+def eyes(refresh=False):
+    """The models that can look at a picture now. A fixed list in .env.example goes stale: gemini-2.5-flash-lite was
+    retired (404) and gemini-flash-latest stopped answering, and the test film's check failed on them. So the list is
+    asked from the API once a run: the .env.example models first, then every listed flash model, each tried with a
+    one pixel picture under a wall clock limit; those that answer are kept, fastest first."""
+    import base64
+    import io
+    from PIL import Image
+    if _eyes.get("live") and not refresh:
+        return _eyes["live"]
+    named = [os.getenv(k, "") for k in ("LLM_VISION", "LLM_FAST", "LLM_MODEL")] + os.getenv("LLM_FALLBACKS", FALLBACKS).split(",")
+    try:
+        listed = sorted((m.id.split("/")[-1] for m in _client.models.list()), reverse=True)
+    except Exception:
+        listed = []
+    listed = [m for m in listed if re.fullmatch(r"gemini-(\d[\d.]*-)?flash(-lite)?(-latest)?", m)]
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 16), (150, 110, 60)).save(buf, "JPEG")
+    tiny = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    timed, dropped = [], _eyes.setdefault("dropped", {})
+    for model in [m for m in dict.fromkeys(x.strip() for x in named + listed) if m][:int(os.getenv("LLM_VISION_TRY", "8"))]:
+        t0 = time.time()
+        try:
+            ask(model, [{"type": "text", "text": 'Answer {"ok": true}'}, {"type": "image_url", "image_url": {"url": tiny}}],
+                0, {"response_format": {"type": "json_object"}}, 30)
+            timed.append((time.time() - t0, model))
+            dropped.pop(model, None)
+        except Exception as err:
+            dropped[model] = (str(err)[:90] or "no answer in 30s").replace("\n", " ")
+    _eyes["live"], _eyes["at"] = [m for _, m in sorted(timed)], time.time()
+    print(f"  vision models: {', '.join(_eyes['live']) or 'none'}" +
+          "".join(f"; {m} left out ({why})" for m, why in dropped.items()), flush=True)
+    return _eyes["live"]
 
 
 def see(prompt, image):
-    """A question about a picture, answered as JSON by a model that sees: LLM_VISION, LLM_FAST, LLM_MODEL, then
-    LLM_FALLBACKS. Calls are spread to LLM_VISION_RPM a minute. A busy model (503, 429) is a normal state of a free
-    API, so a round over all models is repeated for about ten minutes before it counts as down; with only three short
-    tries the test film's GPU stage failed on one busy minute. The picture goes at 768 pixels wide."""
+    """A question about a picture, answered as JSON by one of eyes(). Calls are spread to LLM_VISION_RPM a minute and
+    each gets LLM_VISION_LIMIT seconds of wall clock (a model that hangs cost 150 s a picture before). A busy model
+    (503, 429) is a normal state of a free API: the next model takes the call, and when all are busy the round is
+    repeated for about ten minutes, asking the API again which models answer. A model that is gone (404) or out of its
+    daily quota leaves the list. Only then the API counts as down, and the error names every model and its reason."""
     import base64
     import io
     import threading
@@ -319,29 +356,30 @@ def see(prompt, image):
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=85)
     url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-    msg = [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": url}}]}]
-    models = dict.fromkeys(m.strip() for m in [os.getenv("LLM_VISION", ""), os.getenv("LLM_FAST", "gemini-3.1-flash-lite"),
-                                               os.getenv("LLM_MODEL", "")] + os.getenv("LLM_FALLBACKS", FALLBACKS).split(",")
-                           if m.strip())
+    msg = [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": url}}]
     gap = 60 / float(os.getenv("LLM_VISION_RPM", "12"))
+    limit = float(os.getenv("LLM_VISION_LIMIT", "60"))
     lock = see.__dict__.setdefault("lock", threading.Lock())
-    last = None
-    for pause in (0, 30, 90, 180, 300):
+    why = {}
+    for i, pause in enumerate((0, 30, 90, 180, 300)):
         time.sleep(pause)
-        for model in models:
+        with lock:  # after a busy round the API is asked again which models answer, by one thread for all
+            models = eyes(refresh=i > 0 and time.time() - _eyes.get("at", 0) > 60)
+        for model in list(models):
             with lock:  # the next call waits its turn so the threads together stay under the rate
-                wait = (_seen[-1] + gap - time.time()) if _seen else 0
-                time.sleep(max(0, wait))
+                time.sleep(max(0, (_seen[-1] + gap - time.time()) if _seen else 0))
                 _seen[:] = [time.time()]
             try:
-                r = _client.chat.completions.create(model=model, messages=msg, temperature=0.1,
-                                                    response_format={"type": "json_object"})
-                return objects(r.choices[0].message.content)
-            except (NotFoundError, BadRequestError) as err:  # no such model, or it cannot take pictures
-                last = err
-            except Exception as err:  # busy or rate limited: the next model, then the next round
-                last = err
-    raise SystemExit(f"no model could look at {Path(image).name} for ten minutes: {str(last)[:200]}")
+                return objects(ask(model, msg, 0.1, {"response_format": {"type": "json_object"}}, limit))
+            except Exception as err:
+                why[model] = (str(err)[:120] or f"no answer in {limit:.0f}s").replace("\n", " ")
+                if isinstance(err, NotFoundError) or "PerDay" in str(err):  # gone, or no calls left today
+                    with lock:
+                        if model in _eyes.get("live", []):
+                            _eyes["live"].remove(model)
+                        _eyes.setdefault("dropped", {})[model] = why[model][:90]
+    raise SystemExit("service busy: no model could look at " + Path(image).name + " for ten minutes; " +
+                     "; ".join(f"{m}: {w}" for m, w in why.items())[:600])
 
 
 def ask(model, prompt, temp, extra, limit):

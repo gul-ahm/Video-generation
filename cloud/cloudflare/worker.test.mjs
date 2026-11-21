@@ -141,3 +141,27 @@ test("cloud.py can go on with the chapters still missing", async () => {
   await w.report(w.last("part", 5), "done");
   assert.equal(w.pushes.filter((r) => r.stage === "join").length, 1);
 });
+
+test("a stage whose service is down waits and runs again, without counting as a failure", async () => {
+  const w = world();
+  await w.tick();
+  await w.report(w.last("research"), "done");
+  await w.report(w.last("gpu"), "stage");
+  await w.report(w.last("gpu"), "failed", { error: "service busy: no model could look at x.jpg", kind: "busy" });
+  const unit = () => JSON.parse(w.kv.get(`unit:${w.last("gpu").id}:gpu`));
+  assert.equal(unit().state, "later");
+  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 1, "not pushed again at once");
+  await w.tick();
+  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 1, "not before the half hour");
+  w.kv.set(`unit:${w.last("gpu").id}:gpu`, JSON.stringify({ ...unit(), after: Date.now() - 1 }));
+  await w.tick();
+  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 2);
+  assert.equal(unit().tries, 0);
+  for (let i = 0; i < 6; i++) {
+    await w.report(w.last("gpu"), "failed", { error: "service busy", kind: "busy" });
+    w.kv.set(`unit:${w.last("gpu").id}:gpu`, JSON.stringify({ ...unit(), after: Date.now() - 1 }));
+    await w.tick();
+  }
+  assert.equal(w.told.filter((t) => /stayed down/.test(t)).length, 1, "after three hours the day fails, once");
+  assert.equal(w.state().tries["1"], 1);
+});

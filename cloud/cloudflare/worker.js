@@ -213,6 +213,18 @@ async function joinWhenReady(env, job, all, by) {
   await say(env, `Day ${job.day}: all ${job.chapters} chapters rendered, putting the film together.`);
 }
 
+// an outside service down (kind "busy"): the stage runs again at a later tick, as often as BUSY allows, without
+// counting as a failure; what it made is on Drive, so a later run only does the part that needs the service
+const BUSY = 6;  // half hour waits: three hours
+
+async function unitLater(env, job, s, key, u, why) {
+  const busy = (u.busy || 0) + 1;
+  if (busy > BUSY) return jobFailed(env, job, s, `${key} waited ${BUSY / 2} hours for a service that stayed down: ${why.slice(0, 400)}`);
+  await put(env, unitKey(job, key), { ...u, state: "later", busy, why, nonce: null, after: Date.now() + 25 * 60e3 });
+  return say(env, `Day ${job.day}: ${key} paused, a service it needs is down (${why.slice(0, 300)}). ` +
+    `Nothing is lost; it runs again in half an hour (${busy} of ${BUSY}).`);
+}
+
 async function unitFailed(env, job, s, key, u, why, retry = true) {
   u = { ...u, tries: (u.tries || 0) + 1, state: "failed", why };
   await put(env, unitKey(job, key), u);
@@ -259,7 +271,8 @@ async function hook(e, env) {
     }
     await advance(env, job, key);
   }
-  if (e.event === "failed") await unitFailed(env, job, s, key, u, e.error || "no reason given", e.kind !== "quality");
+  if (e.event === "failed" && e.kind === "busy") await unitLater(env, job, s, key, u, e.error || "no reason given");
+  else if (e.event === "failed") await unitFailed(env, job, s, key, u, e.error || "no reason given", e.kind !== "quality");
   if (e.event === "ready") {
     await put(env, unitKey(job, key), { ...u, state: "done", finished: Date.now() });
     Object.assign(job, { status: "ready", link: e.link, ready: new Date().toISOString() });
@@ -296,6 +309,10 @@ async function watch(env, s) {
   }
   await joinWhenReady(env, job, all);
   for (const [key, u] of Object.entries(all)) {
+    if (u.state === "later") {
+      if (Date.now() >= u.after) await pushUnit(env, job, key, u);
+      continue;
+    }
     if (u.state === "waiting") {
       const now = await pushUnit(env, job, key, u);
       if (now.state === "waiting" && Date.now() - now.waiting > 3 * 3600e3) {
