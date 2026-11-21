@@ -244,7 +244,9 @@ class Checks(unittest.TestCase):
             pic.parent.mkdir(parents=True)
             pic.write_bytes(b"x")
             (pic.parent / "s1.fg.png").write_bytes(b"x")
-            answers = iter([{"fits": False, "problem": "a cannon"}, {"fits": True}])
+            # a cannon is a fault; the redraw comes back with a sunny sky the prompt did not ask for, which is not one
+            answers = iter([{"later": "a cannon", "writing": "", "body": "", "unrelated": ""},
+                            {"later": "", "writing": "", "body": "", "unrelated": "", "light": "sunny, not stormy"}])
             redrawn = []
 
             def draw(todo, moves):

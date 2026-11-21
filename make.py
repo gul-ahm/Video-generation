@@ -311,13 +311,22 @@ def on_kaggle(s, plans, folder):
         return 0
 
 
+# Only faults a viewer would notice count. The first check asked "does it fit" against the whole picture prompt and
+# failed half the pictures for a sunny sky where the prompt said stormy, two archers instead of one, or a flashback
+# to Uhud in a film about Qadisiyyah; the real faults (folding chairs, a cannon, writing on a Sasanian arch) were
+# hidden among them. Each fault has its own field and the verdict is made here, not by the model.
 FIT = """A documentary about {subject}. This picture is on screen while the narrator says:
 "{line}"
-It was asked for as: "{prompt}"
-Return JSON {{"fits": true or false, "problem": "what is wrong, or empty"}}. It fits only when it shows what the
-narration speaks of and everything in it belongs to that time and place: weapons, armour, clothes, buildings,
-animals. A firearm, a cannon, a top hat or anything from a later century, text or letters in the picture, a
-deformed body, or a scene that has nothing to do with the line is not a fit."""
+It was drawn from: "{prompt}"
+Look for these faults only and return JSON {{"later": "", "writing": "", "body": "", "unrelated": ""}}, each field
+empty when the fault is not there, otherwise a few words on what you see:
+- later: anything that did not exist in that time and place: firearms, cannons, modern furniture, tents, buildings,
+  vehicles, clothes or tools from a later age, craters from explosives
+- writing: letters, words, calligraphy or numbers anywhere in the picture
+- body: a deformed person or animal: extra or missing limbs, melted faces, impossible poses
+- unrelated: the picture has nothing to do with what the narrator says (an earlier event the line speaks of is fine)
+Not faults: light, weather, colours, camera angle, how many people, or a detail of the prompt that is missing."""
+FAULTS = ("later", "writing", "body", "unrelated")
 
 
 def check_pictures(s, plans, folder):
@@ -336,7 +345,8 @@ def check_pictures(s, plans, folder):
     def look(path):
         p, line, _ = items[path]
         got = writer.see(FIT.format(subject=subject, line=line[:400], prompt=p[:300]), path)
-        return path, bool(got.get("fits")), str(got.get("problem", ""))[:200]
+        faults = [f"{k}: {got[k]}" for k in FAULTS if str(got.get(k) or "").strip()]
+        return path, not faults, "; ".join(faults)[:200]
 
     verdict, todo = {}, list(items)
     for attempt in range(3):
@@ -349,7 +359,8 @@ def check_pictures(s, plans, folder):
         for path in todo:  # the picture and everything made from it (cut out layers, pose frames)
             for f in path.parent.glob(f"{path.stem}.*"):
                 f.unlink()
-        kaggle_gpu.pictures([(f"{items[x][0]}, true to {subject}", items[x][2] + 1000 * (attempt + 1), x) for x in todo], [])
+        kaggle_gpu.pictures([(f"{items[x][0]}, true to {subject}, nothing from a later age, no writing",
+                              items[x][2] + 1000 * (attempt + 1), x) for x in todo], [])
     (folder / "picture_check.json").write_text(json.dumps({
         "checked": len(items), "fit": sum(v[0] for v in verdict.values()),
         "misses": [{"file": x.name, "line": items[x][1][:160], "problem": verdict[x][1]} for x in todo]},
