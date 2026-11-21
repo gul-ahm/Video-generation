@@ -299,11 +299,17 @@ def llm(prompt, as_json=False, temp=0.8, fast=False):
     raise SystemExit("the LLM kept failing, try again in a few minutes")
 
 
+_seen = []  # times of the last calls to a model that sees, shared by every thread
+
+
 def see(prompt, image):
-    """A question about a picture, answered as JSON by a model that sees (LLM_VISION, else LLM_FAST, then LLM_MODEL).
-    The picture goes at 768 pixels wide: enough to judge it, a fraction of the tokens."""
+    """A question about a picture, answered as JSON by a model that sees: LLM_VISION, LLM_FAST, LLM_MODEL, then
+    LLM_FALLBACKS. Calls are spread to LLM_VISION_RPM a minute. A busy model (503, 429) is a normal state of a free
+    API, so a round over all models is repeated for about ten minutes before it counts as down; with only three short
+    tries the test film's GPU stage failed on one busy minute. The picture goes at 768 pixels wide."""
     import base64
     import io
+    import threading
     from PIL import Image
     global _client
     _client = _client or OpenAI(base_url=os.getenv("LLM_BASE_URL"), api_key=os.getenv("LLM_API_KEY"),
@@ -314,20 +320,28 @@ def see(prompt, image):
     img.save(buf, "JPEG", quality=85)
     url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
     msg = [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": url}}]}]
+    models = dict.fromkeys(m.strip() for m in [os.getenv("LLM_VISION", ""), os.getenv("LLM_FAST", "gemini-3.1-flash-lite"),
+                                               os.getenv("LLM_MODEL", "")] + os.getenv("LLM_FALLBACKS", FALLBACKS).split(",")
+                           if m.strip())
+    gap = 60 / float(os.getenv("LLM_VISION_RPM", "12"))
+    lock = see.__dict__.setdefault("lock", threading.Lock())
     last = None
-    for model in dict.fromkeys(m for m in (os.getenv("LLM_VISION"), os.getenv("LLM_FAST", "gemini-3.1-flash-lite"),
-                                           os.getenv("LLM_MODEL")) if m):
-        for wait in (0, 15, 45):
-            time.sleep(wait)
+    for pause in (0, 30, 90, 180, 300):
+        time.sleep(pause)
+        for model in models:
+            with lock:  # the next call waits its turn so the threads together stay under the rate
+                wait = (_seen[-1] + gap - time.time()) if _seen else 0
+                time.sleep(max(0, wait))
+                _seen[:] = [time.time()]
             try:
                 r = _client.chat.completions.create(model=model, messages=msg, temperature=0.1,
                                                     response_format={"type": "json_object"})
                 return objects(r.choices[0].message.content)
-            except NotFoundError:
-                break
-            except Exception as err:  # busy or rate limited: wait and try again
+            except (NotFoundError, BadRequestError) as err:  # no such model, or it cannot take pictures
                 last = err
-    raise SystemExit(f"no model could look at {Path(image).name}: {str(last)[:200]}")
+            except Exception as err:  # busy or rate limited: the next model, then the next round
+                last = err
+    raise SystemExit(f"no model could look at {Path(image).name} for ten minutes: {str(last)[:200]}")
 
 
 def ask(model, prompt, temp, extra, limit):

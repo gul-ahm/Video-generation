@@ -89,6 +89,21 @@ def qa_md(fails=()):
                       "| check | this video | target | reference |", "|---|---|---|---|", *rows])
 
 
+class Sync(unittest.TestCase):
+    def test_an_unchanged_dataset_is_not_uploaded_again(self):
+        import cloud
+        with tempfile.TemporaryDirectory() as d:
+            sent = []
+            with mock.patch.object(cloud, "ROOT", Path(d)), mock.patch.object(cloud, "pack"), \
+                    mock.patch.object(cloud, "dataset", side_effect=lambda name, tgz: sent.append(name)), \
+                    mock.patch.object(cloud, "stamp", side_effect=lambda *a: "same"), \
+                    mock.patch.object(Path, "home", return_value=Path(d)):
+                (Path(d) / "secrets").mkdir()
+                cloud.sync()
+                cloud.sync()
+            self.assertEqual(sent, ["code", "assets", "secrets"])
+
+
 class Gate(unittest.TestCase):
     def check(self, text):
         with tempfile.TemporaryDirectory() as d:
@@ -249,6 +264,31 @@ class Checks(unittest.TestCase):
             self.assertEqual(got["pictures that fit their line (%)"], 90.0)
             self.assertEqual(got["pages from trusted sites (%)"], 0.0)
             self.assertEqual(got["full screen cards per minute"], 0.0)
+
+    def test_a_busy_vision_model_is_waited_out_not_counted_as_down(self):
+        import writer
+        calls = []
+
+        class Busy(Exception):
+            pass
+
+        def create(model, **kw):
+            calls.append(model)
+            if len(calls) <= 3:  # every model busy in the first round, as on the test film's night
+                raise Busy("503 UNAVAILABLE: this model is currently experiencing high demand")
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content='{"fits": true}'))])
+
+        client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+        with tempfile.TemporaryDirectory() as d:
+            from PIL import Image
+            pic = Path(d) / "p.jpg"
+            Image.new("RGB", (64, 36)).save(pic)
+            env = {"LLM_FAST": "a", "LLM_MODEL": "b", "LLM_FALLBACKS": "c", "LLM_VISION": "", "LLM_VISION_RPM": "6000"}
+            with mock.patch.object(writer, "_client", client), mock.patch.dict(os.environ, env), \
+                    mock.patch("time.sleep") as slept:
+                self.assertEqual(writer.see("fits?", pic), {"fits": True})
+        self.assertEqual(calls, ["a", "b", "c", "a"])
+        self.assertIn(30, [c.args[0] for c in slept.call_args_list])  # a pause before the second round
 
     def test_a_screenshot_covered_by_a_dialog_is_refused(self):
         sys.path.insert(0, str(ROOT / "documentary"))

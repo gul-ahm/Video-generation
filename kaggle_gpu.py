@@ -208,7 +208,7 @@ for t in threads:
     t.start()
 for t in threads:
     t.join()
-print("done", len(os.listdir(OUT)), "of", len(JOBS))
+print("done", sum(os.path.exists(f"{OUT}/{j['id']}.png") for j in JOBS), "of", len(JOBS))  # masks and plates not counted
 '''
 
 

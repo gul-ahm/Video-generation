@@ -130,10 +130,10 @@ def state(direction):
     tgz.unlink(missing_ok=True)
 
 
-def work(stage):
+def work(stage, **extra):
     """documentary/doc.py for this stage. Its progress lines go to Telegram through the worker; when it fails, the
     error carries its last lines, so the message says what broke instead of only "exit status 1"."""
-    env = {**os.environ, "STYLE": RUN.get("style", "documentary"), "DOC_STYLE": RUN.get("style", "documentary")}
+    env = {**os.environ, "STYLE": RUN.get("style", "documentary"), "DOC_STYLE": RUN.get("style", "documentary"), **extra}
     cmd = [sys.executable, "-u", "documentary/doc.py", RUN["title"], str(RUN["minutes"]), RUN.get("subject", "")]
     if stage == "research":
         env["RESEARCH_ONLY"] = "1"
@@ -148,7 +148,7 @@ def work(stage):
         for line in p.stdout:
             print(line, end="", flush=True)
             tail.append(line.rstrip())
-            if line.strip().startswith(STEPS) and re.search(r"took|done|drawn|^screenshots:|^script:", line.strip()):
+            if line.strip().startswith(STEPS) and re.search(r"took|done|drawn|fit their line|^screenshots:|^script:", line.strip()):
                 hook("progress", line=line.strip())
     if p.returncode:
         said = [l for l in tail if l.strip() and not l.startswith(" " * 4)]
@@ -156,7 +156,7 @@ def work(stage):
 
 
 # the lines of a build that say how far it is
-STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "render ", "done:")
+STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "pictures: ", "render ", "done:")
 
 CHECKS = 15  # qa.py's checks; a film is offered for approval only when every one passes
 
@@ -251,6 +251,10 @@ def main():
                 for ext in ("mp4", "json"):
                     if not drive.download(f"job_{RUN['id']}_ch{k}.{ext}", d / f"{k:02d}_cloud.{ext}"):
                         raise RuntimeError(f"chapter {k + 1} ({ext}) is not on Drive")
+        if stage == "gpu":  # voice and pictures go to Drive before the picture check: a failed check never costs them again
+            work(stage, PICTURE_CHECK="0")
+            state("put")
+            hook("progress", line="voice and pictures saved, checking each picture against its line")
         work(stage)
         if stage in ("research", "gpu"):
             state("put")

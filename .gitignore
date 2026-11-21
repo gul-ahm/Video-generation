@@ -30,3 +30,4 @@ __pycache__/
 
 # the channel plan stays private
 plan.json
+.sync.json

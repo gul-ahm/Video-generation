@@ -340,7 +340,7 @@ def check_pictures(s, plans, folder):
 
     verdict, todo = {}, list(items)
     for attempt in range(3):
-        with ThreadPoolExecutor(6) as ex:
+        with ThreadPoolExecutor(3) as ex:
             verdict.update({path: (fits, why) for path, fits, why in ex.map(look, todo)})
         todo = [x for x in todo if not verdict[x][0]]
         print(f"  pictures: {len(items) - len(todo)} of {len(items)} fit their line", flush=True)
@@ -597,7 +597,8 @@ def build(folder):
             voices = voice.narrate(s["chapters"], folder)
             plans = get_plans()
             on_kaggle(s, plans, folder)
-            check_pictures(s, plans, folder)
+            if os.getenv("PICTURE_CHECK", "1") == "1":
+                check_pictures(s, plans, folder)
         else:  # the pictures need only the prompts and the moods, so Kaggle draws them while the Mac is still speaking
             drawing = ex.submit(lambda: on_kaggle(s, get_plans(), folder))
             voices = voice.narrate(s["chapters"], folder)

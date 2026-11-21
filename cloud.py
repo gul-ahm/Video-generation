@@ -70,29 +70,36 @@ def dataset(name, tgz):
     raise SystemExit(f"{slug}: Kaggle did not list the new version in 10 minutes ({(r.stdout + r.stderr).strip()[-300:]})")
 
 
-def stamp():
-    """A fingerprint of the code, written into code.tgz as VERSION: a kernel compares it with the one the worker gave
-    it, so a kernel that got an older code version stops at once and says so."""
+def stamp(patterns=CODE, extra=()):
+    """A fingerprint of what a dataset holds. The code's goes into code.tgz as VERSION: a kernel compares it with the
+    one the worker gave it, so a kernel that got an older code version stops at once and says so."""
     h = hashlib.sha1()
-    for pattern in CODE:
-        for p in sorted(ROOT.glob(pattern)):
-            for f in sorted([p] if p.is_file() else p.rglob("*")):
-                if f.is_file() and not any(x in str(f) for x in SKIP):
-                    h.update(str(f.relative_to(ROOT)).encode() + f.read_bytes())
+    files = [f for pattern in patterns for p in sorted(ROOT.glob(pattern)) for f in sorted([p] if p.is_file() else p.rglob("*"))]
+    for f in files + [Path(x) for x in extra]:
+        if f.is_file() and not any(x in str(f) for x in SKIP):
+            h.update(str(f.name if f.is_absolute() and ROOT not in f.parents else f.relative_to(ROOT)).encode() + f.read_bytes())
     return h.hexdigest()[:12]
 
 
 def sync():
+    """The three datasets, each only when what it holds changed since the last sync that Kaggle confirmed (the
+    assets took 1.5 hours to upload and process when they had not changed). The fingerprints live in .sync.json."""
+    secrets = [(p, f"secrets/{p.name}") for p in (ROOT / "secrets").glob("*") if p.suffix in (".json", ".env")]
+    secrets += [(Path.home() / ".kaggle" / "kaggle.json", "secrets/kaggle.json"), (ROOT / ".env.example", "secrets/env.txt")]
+    version = stamp()
+    now = {"code": version, "assets": stamp(ASSETS), "secrets": stamp([], [p for p, _ in secrets])}
+    done = json.loads((ROOT / ".sync.json").read_text()) if (ROOT / ".sync.json").exists() else {}
     with tempfile.TemporaryDirectory() as d:
-        version = stamp()
         Path(d, "VERSION").write_text(version)
-        pack(CODE, f"{d}/code.tgz", [(Path(d, "VERSION"), "VERSION")])
-        pack(ASSETS, f"{d}/assets.tgz")
-        secrets = [(p, f"secrets/{p.name}") for p in (ROOT / "secrets").glob("*") if p.suffix in (".json", ".env")]
-        pack([], f"{d}/secrets.tgz", secrets + [(Path.home() / ".kaggle" / "kaggle.json", "secrets/kaggle.json"),
-                                                (ROOT / ".env.example", "secrets/env.txt")])
-        for name in ("code", "assets", "secrets"):
+        for name, paths, extra in (("code", CODE, [(Path(d, "VERSION"), "VERSION")]), ("assets", ASSETS, []),
+                                   ("secrets", [], secrets)):
+            if done.get(name) == now[name]:
+                print(f"  history-studio-{name}: unchanged, not uploaded", flush=True)
+                continue
+            pack(paths, f"{d}/{name}.tgz", extra)
             dataset(name, f"{d}/{name}.tgz")
+            done[name] = now[name]
+            (ROOT / ".sync.json").write_text(json.dumps(done))
     if (ROOT / "secrets" / "worker.env").exists():  # the worker pushes the same kernel.py, plan and code version
         import worker
         worker.kv_files(version=version)
