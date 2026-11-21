@@ -326,7 +326,10 @@ async function watch(env, s) {
     }
     if (!["pushed", "running"].includes(u.state) || Date.now() - u.at < GRACE) continue;
     const status = await kaggleStatus(env, kernelOf(key));
-    if (/error|cancel|complete/.test(status) || Date.now() - u.at > (LIMIT[kindOf(key)] + 1) * 3600e3) {
+    // Kaggle's time limit counts from the start, not from the push: a kernel two hours in the GPU queue had only
+    // two of its four hours left before this counted it as lost and pushed it to the back of the queue again
+    const since = u.started || (status === "queued" ? Date.now() : u.at);
+    if (/error|cancel|complete/.test(status) || Date.now() - since > (LIMIT[kindOf(key)] + 1) * 3600e3) {
       await unitFailed(env, job, s, key, u, `the kernel ended without reporting (Kaggle says ${status})`);
       if (job.status !== "running") return;
     }

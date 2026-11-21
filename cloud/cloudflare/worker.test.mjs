@@ -176,3 +176,14 @@ test("a stage out of the vision API's free calls waits until they come back", as
   assert.ok(Math.abs(unit.after - (Date.now() + 7500e3)) < 5000, "two hours and five minutes, not half an hour");
   assert.match(w.told.at(-1), /free calls of the day come back/);
 });
+
+test("a kernel waiting in Kaggle's queue for hours is not counted as lost", async () => {
+  const w = world({ status: () => "queued" });
+  await toParts(w, 1);
+  const key = `unit:${w.last("part", 0).id}:part0`;
+  w.kv.set(key, JSON.stringify({ ...JSON.parse(w.kv.get(key)), at: Date.now() - 6 * 3600e3 }));
+  const before = w.pushes.length;
+  await w.tick();
+  assert.equal(w.pushes.length, before, "not pushed again");
+  assert.equal(JSON.parse(w.kv.get(key)).state, "pushed");
+});

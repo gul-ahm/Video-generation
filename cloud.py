@@ -1,6 +1,6 @@
 """Run History Studio on Kaggle, so no computer has to stay on.
 
-  python cloud.py deploy [commit]              the code of a GitHub commit onto this Mac, checked, tested, then synced
+  python cloud.py deploy [commit] [--no-sync]  the code of a GitHub commit onto this Mac, checked, tested, then synced
   python cloud.py sync                         upload the code, the assets and the secrets as private Kaggle datasets
   python cloud.py day 1                        start day 1 of plan.json now (the worker pushes every stage after it)
   python cloud.py day 1 gpu                    the same, from a later stage (its folder is already on Drive)
@@ -91,11 +91,13 @@ def stamp(patterns=CODE, extra=()):
     return h.hexdigest()[:12]
 
 
-def deploy(ref="main"):
+def deploy(ref="main", upload=True):
     """The code of one GitHub commit onto the Mac, instead of files copied by hand (a copied archive once put the
     empty .env.example of the repository over the keys, and a stale copy once ran instead of the new one). Every
     file of the commit but MINE is written, then read back and compared byte for byte; the files it replaced are
-    kept in _ref/ and put back if the tests fail. Then sync, and the worker when worker.js changed."""
+    kept in _ref/ and put back if the tests fail. Then sync, and the worker when worker.js changed. upload=False
+    (deploy <commit> --no-sync) leaves the datasets as they are: a kernel waiting in Kaggle's queue checks the code
+    version when it starts, and a sync in between would stop it."""
     import requests
     sha = requests.get(f"https://api.github.com/repos/{REPO}/commits/{ref}", timeout=60).json()["sha"]
     r = requests.get(f"https://codeload.github.com/{REPO}/tar.gz/{sha}", timeout=600)
@@ -133,7 +135,8 @@ def deploy(ref="main"):
                 (ROOT / k).unlink()
         raise SystemExit(f"deploy: the tests failed, the files from before are back\n{tests.stderr[-1500:]}")
     (ROOT / "DEPLOYED").write_text(f"{sha}\n")
-    sync()
+    if upload:
+        sync()
     if "cloud/cloudflare/worker.js" in changed:
         import worker
         worker.deploy()
@@ -222,8 +225,8 @@ def plan_day(n):
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if args[:1] == ["deploy"] and len(args) in (1, 2):
-        deploy(args[1] if len(args) == 2 else "main")
+    if args[:1] == ["deploy"] and 1 <= len(args) <= 3:
+        deploy(next((a for a in args[1:] if not a.startswith("--")), "main"), upload="--no-sync" not in args)
     elif args[:1] == ["sync"]:
         sync()
     elif args[:1] == ["send"] and len(args) == 2:
