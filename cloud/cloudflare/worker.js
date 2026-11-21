@@ -1,10 +1,13 @@
 // History Studio on Cloudflare: the videos start by themselves, and the Telegram side of every video.
 //
-//   every 30 min  watches the running video (a kernel that ended without a word counts as failed, a chapter waiting
-//                 for a free machine is pushed); if nothing runs and today's count (default 4) is not reached, the
-//                 next day of plan.json starts. The worker pushes every stage: research, gpu, one machine per chapter,
-//                 join. The count resets daily at the start hour (6:00 India). One video at a time, none when the
-//                 week's GPU hours run out. A failed stage runs once more; failing again, the day is skipped.
+//   every 30 min  watches the day's videos (a kernel that ended without a word counts as failed, a chapter waiting
+//                 for a free machine is pushed); when nothing runs and today's count is not reached, the day's batch
+//                 starts: the next days of plan.json together. Each video's research runs on its own CPU machine;
+//                 when all are done, one GPU session makes every video's voice and pictures, so Kaggle's GPU queue
+//                 is waited out once a day; each video's chapters render as soon as its GPU part is done, then its
+//                 join. The count resets daily at the start hour (6:00 India); none start when the week's GPU hours
+//                 run out. A failed stage runs once more; failing again, the day is tried in a later batch, then
+//                 skipped.
 //   Yes           the video is approved and gets the next free publish slot: two a day, 11:00 AM and 5:30 PM New
 //                 York. Four made a day fill two days of slots, so the extra ones wait for the next free day.
 //                 Making never waits for an approval.
@@ -73,9 +76,14 @@ export default {
 const get = async (env, key, fallback) => JSON.parse((await env.KV.get(key)) || "null") ?? fallback;
 const put = (env, key, value) => env.KV.put(key, JSON.stringify(value));
 // a new object each time: one shared default had its counters filled by every later read
-const fresh = () => ({ next_day: 1, paused: true, running: null, last_slot: null, per_day: 4, start_hour: 6, started: {},
-                       tries: {}, gpu: {}, gpu_start: {}, told: null });
-const state = async (env) => ({ ...fresh(), ...(await get(env, "state", {})) });
+const fresh = () => ({ next_day: 1, paused: true, batch: null, last_slot: null, per_day: 4, start_hour: 6, started: {},
+                       tries: {}, retry: [], gpu: {}, gpu_start: {}, told: null });
+async function state(env) {
+  const s = { ...fresh(), ...(await get(env, "state", {})) };
+  if (s.running) s.batch = { ids: [s.running.id], since: s.running.since };  // a state from before batches
+  delete s.running;
+  return s;
+}
 
 const GPU_WEEK = 29;        // Kaggle gives 30 GPU hours a week; one is kept spare
 
@@ -115,7 +123,10 @@ function slugOf(title) {
 }
 
 const kindOf = (key) => (key.startsWith("part") ? "part" : key);
-const kernelOf = (key) => (key.startsWith("part") ? `studio-render-${key.slice(4)}` : `studio-${key}`);
+// the videos of a batch run side by side, so each has its own CPU kernels (slot 0, 1, 2...); the GPU kernel is one
+const kernelName = (r) => (r.stage === "gpu" ? "studio-gpu" : r.stage === "part" ? `studio-render-${r.slot || 0}-${r.part}`
+  : `studio-${r.stage}-${r.slot || 0}`);
+const kernelOf = (job, key) => kernelName({ stage: kindOf(key), slot: job.run.slot, part: Number(key.slice(4)) });
 const unitKey = (job, key) => `unit:${job.id}:${key}`;
 
 async function units(env, job) {
@@ -124,16 +135,60 @@ async function units(env, job) {
   return Object.fromEntries(keys.map((k, i) => [k.split(":")[2], all[i]]).filter(([, u]) => u));
 }
 
-function newJob(d) {
+function newJob(d, slot = 0) {
   const slug = slugOf(d.title);
   return { id: slug.slice(0, 40), day: d.day, title: d.title, status: "running", started: new Date().toISOString(),
            run: { id: slug.slice(0, 40), title: d.title, minutes: d.minutes || 22, style: "documentary", slug,
-                  subject: d.subject || "", day: d.day },
+                  subject: d.subject || "", day: d.day, slot },
            chapters: null, feedback: [] };
+}
+
+async function batchJobs(env, s) {
+  const jobs = await Promise.all((s.batch?.ids || []).map((id) => get(env, `job:${id}`, null)));
+  return jobs.filter((j) => j && j.status === "running");
+}
+
+// one GPU session for these videos; a refused push (Kaggle runs too many at once) waits for the next tick
+async function pushGpu(env, jobs) {
+  const nonce = crypto.randomUUID().slice(0, 8);
+  const run = { ...jobs[0].run, stage: "gpu", nonce, jobs: jobs.map((j) => j.run) };
+  let ok = null;
+  try {
+    await kagglePush(env, run);
+  } catch (err) {
+    ok = String(err).slice(0, 200);
+  }
+  for (const job of jobs) {
+    const u = await get(env, unitKey(job, "gpu"), { tries: 0 });
+    await put(env, unitKey(job, "gpu"), ok === null
+      ? { ...u, state: "pushed", nonce, at: Date.now(), waiting: null, started: null, batch: jobs.map((j) => j.id) }
+      : { ...u, state: "waiting", nonce: null, waiting: u.waiting || Date.now(), why: ok });
+  }
+  return ok === null ? "pushed" : "waiting";
+}
+
+// the GPU session, once every video of the batch has its research. Two researches ending at the same moment both
+// see all done, so only the one that ended last pushes; the watch pushes it otherwise. A video whose GPU part failed
+// or waits for a service goes into the next session, after the one running has finished every video it was given.
+async function gpuWhenReady(env, s, by) {
+  const jobs = await batchJobs(env, s);
+  const all = await Promise.all(jobs.map((j) => units(env, j)));
+  if (!jobs.length || all.some((a) => ["pushed", "running"].includes(a.gpu?.state))) return;
+  if (!all.every((a) => a.research?.state === "done")) return;
+  if (by) {
+    const last = jobs.map((j, i) => [j.id, all[i].research.finished || 0]).sort((a, b) => b[1] - a[1] || (b[0] > a[0] ? 1 : -1))[0][0];
+    if (by !== last) return;
+  }
+  const todo = jobs.filter((_, i) => !all[i].gpu || ["waiting", "failed"].includes(all[i].gpu.state) ||
+    (all[i].gpu.state === "later" && Date.now() >= all[i].gpu.after));
+  if (!todo.length) return;
+  const st = await pushGpu(env, todo);
+  if (st === "pushed") await say(env, `GPU session for ${todo.map((j) => `day ${j.day}`).join(", ")}: voice, pictures and picture check, one video after another.`);
 }
 
 // push one unit; a refused push (Kaggle runs too many at once) waits for the next tick
 async function pushUnit(env, job, key, u = { tries: 0 }) {
+  if (key === "gpu") return pushGpu(env, [job]).then(() => get(env, unitKey(job, "gpu"), u));
   const run = { ...job.run, stage: kindOf(key), nonce: crypto.randomUUID().slice(0, 8),
                 ...(key.startsWith("part") ? { part: Number(key.slice(4)) } : {}), chapters: job.chapters };
   try {
@@ -153,52 +208,86 @@ async function startJob(env, day, from = "research", extra = {}) {
     : plan.days.find((x) => x.day === day);
   if (!d) return `Day ${day} is not in the plan.`;
   const s = await state(env);
-  if (s.running && s.running.day !== day) return `Day ${s.running.day} is still running; one video at a time.`;
-  const job = { ...newJob(d), chapters: extra.chapters ?? null };
+  const running = await batchJobs(env, s);
+  const same = running.find((j) => j.day === day);
+  if (running.length && !same) return `Days ${running.map((j) => j.day).join(", ")} are still running.`;
+  const job = { ...newJob(d, same?.run.slot || 0), chapters: extra.chapters ?? null };
   for (const k of (await env.KV.list({ prefix: `unit:${job.id}:` })).keys) await env.KV.delete(k.name);  // a fresh run
   const done = extra.done || [];
   for (const k of done) await put(env, unitKey(job, `part${k}`), { state: "done", tries: 0 });
   const keys = from === "parts"
     ? [...Array(job.chapters).keys()].filter((k) => !done.includes(k)).map((k) => `part${k}`) : [from];
+  if (from !== "research") await put(env, unitKey(job, "research"), { state: "done", tries: 0, finished: Date.now() });
+  if (!["research", "gpu"].includes(from)) await put(env, unitKey(job, "gpu"), { state: "done", tries: 0 });
+  await put(env, `job:${job.id}`, job);
+  s.batch = { ids: [job.id], since: Date.now() };
   const pushed = [];
   for (const key of keys) pushed.push([key, (await pushUnit(env, job, key)).state]);
-  s.running = { id: job.id, day, since: Date.now() };
   if (from === "research" && day) s.started[today(s)] = (s.started[today(s)] || 0) + 1;
-  await put(env, `job:${job.id}`, job);
   await put(env, "state", s);
   const waiting = pushed.filter(([, st]) => st === "waiting").map(([k]) => k);
   return `Day ${day} ${from === "research" ? "started" : `goes on from ${from}`}: ${d.title}` +
     (waiting.length ? `\n(${waiting.join(", ")} wait for a free Kaggle machine)` : "");
 }
 
-// a day that failed: once more from the start, then skipped so the plan goes on
+// the day's batch: the next n days of the plan (a day that failed once comes first), each with its own CPU
+// machines (slot), their research all at once
+async function startBatch(env, s, days) {
+  const plan = await get(env, "plan", { days: [] });
+  const jobs = days.map((day, slot) => newJob(plan.days.find((x) => x.day === day), slot));
+  s.batch = { ids: jobs.map((j) => j.id), since: Date.now() };
+  s.started[today(s)] = (s.started[today(s)] || 0) + jobs.length;
+  s.retry = (s.retry || []).filter((d) => !days.includes(d));
+  s.next_day = Math.max(s.next_day, ...days.map((d) => d + 1));
+  const waiting = [];
+  for (const job of jobs) {
+    for (const k of (await env.KV.list({ prefix: `unit:${job.id}:` })).keys) await env.KV.delete(k.name);
+    await put(env, `job:${job.id}`, job);
+    if ((await pushUnit(env, job, "research")).state === "waiting") waiting.push(job.day);
+  }
+  await put(env, "state", s);
+  return `Today's videos started: ${jobs.map((j) => `day ${j.day} ${j.title}`).join("; ")}.\nResearch first, then one GPU ` +
+    `session for all of them.${waiting.length ? `\n(research of day ${waiting.join(", ")} waits for a free machine)` : ""}`;
+}
+
+// a day that failed: into a later batch once, then skipped so the plan goes on
 function failedDay(s, day) {
   s.tries[day] = (s.tries[day] || 0) + 1;
   if (!day) return "This was the test film.";
-  if (s.tries[day] < 2) return `It will be tried once more.`;
-  if (s.next_day === day) s.next_day = day + 1;
+  if (s.tries[day] < 2) {
+    s.retry = [...new Set([...(s.retry || []), day])];
+    return "It will be tried once more in the next batch.";
+  }
   return `It failed twice, so it is skipped for now (start it again with /day ${day}).`;
 }
 
 async function jobFailed(env, job, s, why) {
   job.status = "failed";
   job.error = why;
-  if (s.running?.id === job.id) s.running = null;
   await put(env, `job:${job.id}`, job);
   await say(env, `Day ${job.day}: ${why}\n${failedDay(s, job.day)}`);
+  await batchEnded(env, s);
+  await gpuWhenReady(env, s);  // the others may have been waiting for this one's research
+}
+
+// the batch is over when none of its videos runs any more
+async function batchEnded(env, s) {
+  if (s.batch && !(await batchJobs(env, s)).length) s.batch = null;
 }
 
 // what comes after a unit is done
-async function advance(env, job, key) {
-  if (key === "research") return pushUnit(env, job, "gpu");
+async function advance(env, s, job, key) {
+  if (key === "research") return gpuWhenReady(env, s, job.id);
   if (key === "gpu") {
     for (let k = 0; k < job.chapters; k++) await pushUnit(env, job, `part${k}`);
-    return;
+    return gpuWhenReady(env, s);  // the session has finished every video: one that failed goes into the next
   }
-  if (!key.startsWith("part")) return;
-  const all = await units(env, job);
-  for (const [k, u] of Object.entries(all)) if (u.state === "waiting") await pushUnit(env, job, k, u);
-  await joinWhenReady(env, job, all, key);
+  // a machine came free: chapters of any video of the batch that wait for one
+  for (const other of await batchJobs(env, s)) {
+    const all = await units(env, other);
+    for (const [k, u] of Object.entries(all)) if (u.state === "waiting" && k !== "gpu") await pushUnit(env, other, k, u);
+  }
+  if (key.startsWith("part")) await joinWhenReady(env, job, await units(env, job), key);
 }
 
 // the join, once every chapter is done. Two chapters finishing at the same moment both see all done, so only the one
@@ -232,6 +321,10 @@ async function unitLater(env, job, s, key, u, why, wait) {
 async function unitFailed(env, job, s, key, u, why, retry = true) {
   u = { ...u, tries: (u.tries || 0) + 1, state: "failed", why };
   await put(env, unitKey(job, key), u);
+  if (key === "gpu" && retry && u.tries < 2) {  // not pushed now: that would stop the session with the other videos
+    await say(env, `Day ${job.day}: gpu failed (${why.slice(0, 160)}). It runs again when the GPU session is free.`);
+    return gpuWhenReady(env, s);
+  }
   if (retry && u.tries < 2) {  // pause only stops new videos; the one running is finished
     const again = await pushUnit(env, job, key, u);
     return say(env, `Day ${job.day}: ${key} failed (${why.slice(0, 160)}). ` +
@@ -273,16 +366,18 @@ async function hook(e, env) {
       job.chapters = e.chapters;
       await put(env, `job:${job.id}`, job);
     }
-    await advance(env, job, key);
+    await advance(env, s, job, key);
   }
-  if (e.event === "failed" && e.kind === "busy") await unitLater(env, job, s, key, u, e.error || "no reason given", Number(e.wait) || 0);
+  if (e.event === "failed" && e.kind === "busy") {
+    await unitLater(env, job, s, key, u, e.error || "no reason given", Number(e.wait) || 0);
+    if (key === "gpu") await gpuWhenReady(env, s);
+  }
   else if (e.event === "failed") await unitFailed(env, job, s, key, u, e.error || "no reason given", e.kind !== "quality");
   if (e.event === "ready") {
     await put(env, unitKey(job, key), { ...u, state: "done", finished: Date.now() });
     Object.assign(job, { status: "ready", link: e.link, ready: new Date().toISOString() });
     await put(env, `job:${job.id}`, job);
-    if (s.running?.id === job.id) s.running = null;
-    if (job.day >= s.next_day) s.next_day = job.day + 1;
+    await batchEnded(env, s);
     if (job.day === 0) await say(env, `TEST FILM, not for publishing\n\n${readyText(e)}`);
     else await say(env, readyText(e), [[{ text: "Yes, publish", callback_data: `yes:${job.id}` },
                                         { text: "No", callback_data: `no:${job.id}` }]]);
@@ -300,58 +395,71 @@ async function kaggleStatus(env, kernel) {
   return String((await r.json().catch(() => ({}))).status || r.status).toLowerCase();
 }
 
-// the running video: kernels that ended without a word, chapters waiting for a machine
+// the day's videos: kernels that ended without a word, units waiting for a machine or a service
 async function watch(env, s) {
-  const job = await get(env, `job:${s.running.id}`, null);
-  if (!job || job.status !== "running") {
-    s.running = null;
-    return;
-  }
-  const all = await units(env, job);
-  if (!Object.keys(all).length && Date.now() - s.running.since > 3600e3) {
-    return jobFailed(env, job, s, "the worker has no record of its stages (started by an older version)");
-  }
-  await joinWhenReady(env, job, all);
-  for (const [key, u] of Object.entries(all)) {
-    if (u.state === "later") {
-      if (Date.now() >= u.after) await pushUnit(env, job, key, u);
+  const jobs = await batchJobs(env, s);
+  let gpu = null;  // one GPU kernel for the batch: asked once
+  for (const job of jobs) {
+    const all = await units(env, job);
+    if (!Object.keys(all).length && Date.now() - s.batch.since > 3600e3) {
+      await jobFailed(env, job, s, "the worker has no record of its stages (started by an older version)");
       continue;
     }
-    if (u.state === "waiting") {
-      const now = await pushUnit(env, job, key, u);
-      if (now.state === "waiting" && Date.now() - now.waiting > 3 * 3600e3) {
-        return jobFailed(env, job, s, `${key} found no free Kaggle machine in 3 hours (${now.why})`);
+    await joinWhenReady(env, job, all);
+    for (const [key, u] of Object.entries(all)) {
+      if (key === "gpu" && ["waiting", "later"].includes(u.state)) continue;  // gpuWhenReady below
+      if (u.state === "later") {
+        if (Date.now() >= u.after) await pushUnit(env, job, key, u);
+        continue;
       }
-      continue;
-    }
-    if (!["pushed", "running"].includes(u.state) || Date.now() - u.at < GRACE) continue;
-    const status = await kaggleStatus(env, kernelOf(key));
-    // Kaggle's time limit counts from the start, not from the push: a kernel two hours in the GPU queue had only
-    // two of its four hours left before this counted it as lost and pushed it to the back of the queue again
-    const since = u.started || (status === "queued" ? Date.now() : u.at);
-    if (/error|cancel|complete/.test(status) || Date.now() - since > (LIMIT[kindOf(key)] + 1) * 3600e3) {
-      await unitFailed(env, job, s, key, u, `the kernel ended without reporting (Kaggle says ${status})`);
-      if (job.status !== "running") return;
+      if (u.state === "waiting") {
+        const now = await pushUnit(env, job, key, u);
+        if (now.state === "waiting" && Date.now() - now.waiting > 3 * 3600e3) {
+          await jobFailed(env, job, s, `${key} found no free Kaggle machine in 3 hours (${now.why})`);
+          break;
+        }
+        continue;
+      }
+      if (!["pushed", "running"].includes(u.state) || Date.now() - u.at < GRACE) continue;
+      const status = key === "gpu" ? (gpu ??= await kaggleStatus(env, "studio-gpu")) : await kaggleStatus(env, kernelOf(job, key));
+      // Kaggle's time limit counts from the start, not from the push: a kernel two hours in the GPU queue had only
+      // two of its four hours left before this counted it as lost and pushed it to the back of the queue again
+      // the GPU session's videos wait their turn inside it: only Kaggle's own session limit ends that one
+      const since = u.started || (status === "queued" ? Date.now() : u.at);
+      const late = key !== "gpu" && Date.now() - since > (LIMIT[kindOf(key)] + 1) * 3600e3;
+      if (/error|cancel|complete/.test(status) || late) {
+        await unitFailed(env, job, s, key, u, `the kernel ended without reporting (Kaggle says ${status})`);
+        if ((await get(env, `job:${job.id}`, job)).status !== "running") break;
+      }
     }
   }
+  for (const job of await batchJobs(env, s)) {  // a GPU part that waited for a machine too long
+    const u = await get(env, unitKey(job, "gpu"), null);
+    if (u?.state === "waiting" && Date.now() - u.waiting > 3 * 3600e3) await jobFailed(env, job, s, `gpu found no free Kaggle machine in 3 hours (${u.why})`);
+  }
+  await gpuWhenReady(env, s);
+  await batchEnded(env, s);
 }
 
 async function tick(env) {
   const s = await state(env);
-  if (s.running) {
+  if (s.batch) {
     const before = JSON.stringify(s);
     await watch(env, s);
     if (JSON.stringify(s) !== before) await put(env, "state", s);  // KV gives 1000 writes a day: only real changes
   }
-  if (s.paused || s.running || (s.started[today(s)] || 0) >= s.per_day) return;
+  const room = s.per_day - (s.started[today(s)] || 0);
+  if (s.paused || s.batch || room <= 0) return;
   const plan = await get(env, "plan", { days: [] });
-  if (!plan.days.some((x) => x.day >= s.next_day)) {
+  const fresh = plan.days.map((x) => x.day).filter((x) => x >= s.next_day).sort((a, b) => a - b);
+  if (!fresh.length && !(s.retry || []).length) {
     s.paused = true;
     await put(env, "state", s);
     return say(env, "Every day of the plan has been made. The automatic start is paused.");
   }
   const used = s.gpu[week()] || 0;
-  if (used + gpuAverage(s) > GPU_WEEK) {
+  const fit = Math.min(room, Math.floor((GPU_WEEK - used) / gpuAverage(s)));
+  if (fit <= 0) {
     if (s.told !== week()) {
       s.told = week();
       await put(env, "state", s);
@@ -359,8 +467,8 @@ async function tick(env) {
     }
     return;
   }
-  const day = plan.days.map((x) => x.day).filter((x) => x >= s.next_day).sort((a, b) => a - b)[0];
-  await say(env, await startJob(env, day).catch((err) => `Could not start day ${day}: ${err}`));
+  const days = [...(s.retry || []), ...fresh].slice(0, fit);
+  await say(env, await startBatch(env, s, days).catch((err) => `Could not start days ${days.join(", ")}: ${err}`));
 }
 
 async function kagglePush(env, run) {
@@ -368,14 +476,16 @@ async function kagglePush(env, run) {
   if (!code) throw new Error("kernel.py is not in KV, run: python cloud.py worker");
   run = { ...run, code: await env.KV.get("code_version") };  // the kernel stops if Kaggle mounts other code
   const me = env.KAGGLE_USERNAME;
-  const name = run.stage === "part" ? `studio-render-${run.part}` : `studio-${run.stage}`;
+  const name = kernelName(run);
   const gpu = run.stage === "gpu";
+  // the GPU session makes every video of the batch: about an hour each, and Kaggle allows 12
+  const hours = gpu ? Math.min(12, 1 + 1.5 * (run.jobs || [run]).length) : LIMIT[run.stage];
   const body = {
     slug: `${me}/${name}`, newTitle: name, text: code.replace("__RUN__", JSON.stringify(run)),
     language: "python", kernelType: "script", isPrivate: true, enableGpu: gpu, enableTpu: false, enableInternet: true,
     datasetDataSources: ["code", "assets", "secrets"].map((x) => `${me}/history-studio-${x}`),
     competitionDataSources: [], kernelDataSources: [], modelDataSources: [], categoryIds: [],
-    sessionTimeoutSeconds: LIMIT[run.stage] * 3600, ...(gpu ? { machineShape: "NvidiaTeslaT4" } : {}),
+    sessionTimeoutSeconds: hours * 3600, ...(gpu ? { machineShape: "NvidiaTeslaT4" } : {}),
   };
   const auth = "Basic " + btoa(`${me}:${env.KAGGLE_KEY}`);
   const r = await fetch("https://www.kaggle.com/api/v1/kernels/push", {
@@ -534,7 +644,6 @@ async function command(text, env) {
   if (cmd === "/next" || cmd === "/day") {
     const day = cmd === "/day" ? Number(arg) : s.next_day;
     if (!day) return say(env, "Send it like: /day 5");
-    if (s.running) return say(env, `Day ${s.running.day} is still running; one video at a time.`);
     return say(env, await startJob(env, day).catch((err) => `Could not start day ${day}: ${err}`));
   }
   if (cmd === "/undo") {  // the last approval taken back: the video gets its Yes and No again and frees its slot
@@ -566,7 +675,7 @@ async function command(text, env) {
       `${j.title || j.id}${j.publish_at ? `, publish ${ny(j.publish_at)} NY` : ""}`);
     return say(env, `Automatic start: ${s.paused ? "paused" : "on"}, ${s.per_day} a day from ${s.start_hour}:00, ` +
       `next day ${s.next_day}\nToday: ${s.started[today(s)] || 0} started\n` +
-      `Running: ${s.running ? `day ${s.running.day}` : "nothing"}\n` +
+      `Running: ${s.batch ? (await batchJobs(env, s)).map((j) => `day ${j.day}`).join(", ") || "finishing" : "nothing"}\n` +
       `GPU this week: ${(s.gpu[week()] || 0).toFixed(1)} of ${GPU_WEEK} h, about ${gpuAverage(s).toFixed(1)} h a video` +
       `\n\n${lines.join("\n") || "No videos yet."}`);
   }

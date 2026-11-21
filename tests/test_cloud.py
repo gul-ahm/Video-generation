@@ -315,7 +315,7 @@ class Checks(unittest.TestCase):
             self.assertIn("firearms", redrawn[0][3])
             self.assertFalse((pic.parent / "s1.fg.png").exists())  # the old cut out went with the old picture
 
-    def checked(self, gpu_answers, gemini_answers, cache=None, pictures=3):
+    def checked(self, gpu_answers, gemini_answers, cache=None, pictures=3, sees_letters=True):
         """check_pictures over a few pictures: the GPU model answers some (by writing the cache, as
         vision_local.py does), the Gemini key the rest. Returns what each looked at and the result."""
         import make
@@ -334,9 +334,15 @@ class Checks(unittest.TestCase):
             todo = json.loads(Path(cmd[2]).read_text())
             seen = json.loads(Path(cmd[3]).read_text()) if Path(cmd[3]).exists() else {}
             for item in todo:
-                gpu.append(Path(item["path"]).name)
-                if Path(item["path"]).name in gpu_answers:
-                    seen[Path(item["path"]).name] = {"md5": item["md5"], "answer": gpu_answers[Path(item["path"]).name]}
+                name = Path(item["path"]).name
+                if name == "canary_writing.png":  # the test picture with big letters goes first
+                    self.assertEqual(todo[0], item)
+                    answer = '{"writing": true, "what": "ROME 1999"}' if sees_letters else '{"writing": false}'
+                    seen[name] = {"md5": item["md5"], "answer": answer, "by": "Qwen-test"}
+                    continue
+                gpu.append(name)
+                if name in gpu_answers:
+                    seen[name] = {"md5": item["md5"], "answer": gpu_answers[name], "by": "Qwen-test"}
             Path(cmd[3]).write_text(json.dumps(seen))
             return types.SimpleNamespace(returncode=0)
 
@@ -359,6 +365,20 @@ class Checks(unittest.TestCase):
                                         {"s2.jpg": {"later": ""}})
         self.assertEqual((gpu, gemini), (["s0.jpg", "s1.jpg", "s2.jpg"], ["s2.jpg"]))
         self.assertEqual((got["fit"], [m["problem"] for m in got["misses"]]), (2, ["later: folding chairs"]))
+
+    def test_a_gpu_model_that_misses_the_test_letters_is_not_trusted(self):
+        ok = '{"later": false, "writing": false, "body": false, "unrelated": false, "what": ""}'
+        gpu, gemini, got = self.checked({f"s{k}.jpg": ok for k in range(3)},
+                                        {"s0.jpg": {"later": True, "what": "folding chairs"}, "s1.jpg": {"later": False},
+                                         "s2.jpg": {"writing": False}}, sees_letters=False)
+        self.assertEqual(sorted(gemini), ["s0.jpg", "s1.jpg", "s2.jpg"])
+        self.assertEqual([m["problem"] for m in got["misses"]], ["later: folding chairs"])
+
+    def test_an_unreadable_answer_goes_to_the_next_judge_instead_of_stopping_the_stage(self):
+        broken = '{"later": false, "writing": false, "body": false, "unrelated": false,}'  # the trailing comma of that night
+        gpu, gemini, got = self.checked({"s0.jpg": broken}, {"s0.jpg": {"later": False}, "s1.jpg": {"later": False},
+                                                              "s2.jpg": {"later": False}})
+        self.assertEqual((sorted(gemini), got["fit"]), (["s0.jpg", "s1.jpg", "s2.jpg"], 3))
 
     def test_a_check_that_stopped_goes_on_from_the_picture_it_reached(self):
         import make
@@ -568,6 +588,24 @@ class Reports(unittest.TestCase):
             k.hook("done")
         self.assertEqual((post.body["nonce"], post.body["part"], post.body["event"]), ("n1", 2, "done"))
         fake.tell.assert_not_called()
+
+    def test_one_gpu_session_makes_every_video_and_one_failing_does_not_stop_the_others(self):
+        jobs = [{"id": f"d{k}", "title": f"Day {k}", "slug": f"day-{k}", "day": k, "minutes": 22} for k in (1, 2, 3)]
+        k = kernel({"stage": "gpu", "nonce": "n1", **jobs[0], "jobs": jobs})
+        said, made = [], []
+
+        def video(stage):
+            made.append(k.RUN["id"])
+            if k.RUN["id"] == "d2":
+                raise RuntimeError("pictures failed")
+            k.hook("done", chapters=1)
+        hook = lambda event, **x: said.append((k.RUN["id"], event, x.get("kind")))
+        with mock.patch.object(k, "unpack"), mock.patch.object(k, "install"), mock.patch.object(k, "video", video), \
+                mock.patch.object(k, "hook", hook), mock.patch.object(k, "checks"):
+            k.main()
+        self.assertEqual(made, ["d1", "d2", "d3"])
+        self.assertEqual(said, [("d1", "stage", None), ("d1", "done", None), ("d2", "stage", None),
+                                ("d2", "failed", "error"), ("d3", "stage", None), ("d3", "done", None)])
 
     def test_a_failed_build_says_what_broke(self):
         k = kernel()

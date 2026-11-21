@@ -205,6 +205,14 @@ node --test cloud/cloudflare/worker.test.mjs # the worker: a whole video, stale 
 `cloud/` runs the same pipeline as private Kaggle kernels. They never start each other: a small Cloudflare worker
 pushes every one of them and hears back from each.
 
+The day's videos run as one batch: each video's research on its own CPU machine, then **one GPU session for all
+of them**, so Kaggle's batch GPU queue (hours long on some evenings, while an interactive notebook starts at once)
+is waited out once a day instead of once a video, and the install and model downloads happen once. Each video
+reports on its own from that session: its chapters start rendering while the next video's pictures are drawn, and
+a video that fails goes into a second session after the first has finished the others. Each video of a batch has
+its own CPU kernels (`studio-research-<slot>`, `studio-render-<slot>-<chapter>`, `studio-join-<slot>`); the GPU
+kernel is `studio-gpu`.
+
 1. **research** (CPU): web research, claims ledger, verified screenshots, script.
 2. **gpu** (2 x T4): the edit plan, the voice (Chatterbox on CUDA instead of MLX) and the pictures, drawn on the same
    machine instead of a second kernel. Only this stage uses GPU hours.

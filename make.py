@@ -321,25 +321,42 @@ def on_kaggle(s, plans, folder):
 # failed half the pictures for a sunny sky where the prompt said stormy, two archers instead of one, or a flashback
 # to Uhud in a film about Qadisiyyah; the real faults (folding chairs, a cannon, writing on a Sasanian arch) were
 # hidden among them. Each fault has its own field and the verdict is made here, not by the model.
+# Four yes or no questions, each about what is in the picture, and a separate field for what was seen. The field
+# by field version ("later: anything that did not exist...: firearms, cannons, ...") was answered by Qwen2.5-VL-3B
+# with the examples themselves on 90 of 114 pictures: a small model fills a field with the words next to it.
 FIT = """A documentary about {subject}. This picture is on screen while the narrator says:
 "{line}"
 It was drawn from: "{prompt}"
-Look for these faults only and return JSON {{"later": "", "writing": "", "body": "", "unrelated": ""}}, each field
-empty when the fault is not there, otherwise a few words on what you see:
-- later: anything that did not exist in that time and place: firearms, cannons, modern furniture, tents, buildings,
-  vehicles, clothes or tools from a later age, craters from explosives
-- writing: letters, words, calligraphy or numbers anywhere in the picture
-- body: a deformed person or animal: extra or missing limbs, melted faces, impossible poses
-- unrelated: the picture has nothing to do with what the narrator says (an earlier event the line speaks of is fine)
-Not faults: light, weather, colours, camera angle, how many people, or a detail of the prompt that is missing."""
+Answer four questions about what you can actually see in the picture:
+1. later: is there an object that did not exist in that time and place?
+2. writing: is there readable writing, letters or numbers?
+3. body: is a person or an animal clearly deformed?
+4. unrelated: does the picture show something else than what the narrator says?
+Most pictures have none of these. Light, weather, colours and missing details of the prompt do not count.
+Answer with JSON only: {{"later": false, "writing": false, "body": false, "unrelated": false, "what": ""}}
+Set a question to true only when you see it, and then name what you see in "what"."""
 FAULTS = ("later", "writing", "body", "unrelated")
 
 
+def parse(answer):
+    """A model's answer as a dict, or None when it is not readable JSON (a trailing comma once stopped the GPU
+    stage twice): such a picture counts as not answered and goes to the next judge."""
+    if isinstance(answer, dict):
+        return answer
+    try:
+        got = writer.objects(answer)
+    except (ValueError, TypeError):
+        return None
+    return got if isinstance(got, dict) and any(k in got for k in FAULTS) else None
+
+
 def faults(answer):
-    """The faults named in a model's answer (FIT): empty when the picture fits."""
-    got = writer.objects(answer) if isinstance(answer, str) else answer
-    got = got if isinstance(got, dict) else {}
-    return "; ".join(f"{k}: {got[k]}" for k in FAULTS if str(got.get(k) or "").strip())[:200]
+    """The faults in a model's answer (FIT): empty when the picture fits. A question answered true carries "what";
+    an older answer with the fault named in its field still counts."""
+    got = parse(answer) or {}
+    said = lambda v: v is True or (isinstance(v, str) and v.strip().lower() not in ("", "false", "no", "none"))
+    return "; ".join(f"{k}: {got.get('what') if got[k] is True else got[k]}".strip(": ")
+                     for k in FAULTS if said(got.get(k)))[:200]
 
 
 # what to keep out of a picture drawn again, by the fault the check found in the one before
@@ -367,13 +384,21 @@ def judge(todo, items, subject, cache_file):
     goes on from the picture it reached instead of from the first one."""
     question = lambda x: FIT.format(subject=subject, line=items[x][1][:400], prompt=items[x][0][:300])
     if todo and os.getenv("VISION_LOCAL", "1") == "1" and shutil.which("nvidia-smi"):
+        test = canary(cache_file.parent)
+        items = {**items, test: ("a wide empty desert at dawn", "The desert stretches out under the morning sun.", 0)}
         job = cache_file.with_name("vision_todo.json")
-        job.write_text(json.dumps([{"path": str(x), "md5": md5(x), "question": question(x)} for x in todo]))
+        job.write_text(json.dumps([{"path": str(x), "md5": md5(x), "question": question(x)} for x in [test, *todo]]))
         run = subprocess.run([sys.executable, "vision_local.py", job, cache_file], check=False)
         if run.returncode:
             print(f"  vision: the GPU model stopped (exit {run.returncode}), the Gemini key looks at the rest", flush=True)
+        cache = json.loads(cache_file.read_text()) if cache_file.exists() else {}
+        if "writing" not in faults(cache.get(test.name, {}).get("answer", "")):
+            # the model said nothing of the big letters in the test picture: what it said of ours is not trusted
+            print("  vision: the GPU model missed the writing in the test picture, the Gemini key judges instead", flush=True)
+            cache = {k: v for k, v in cache.items() if not v.get("by", "").startswith("Qwen") or k == test.name}
+            cache_file.write_text(json.dumps(cache, ensure_ascii=False))
     cache = json.loads(cache_file.read_text()) if cache_file.exists() else {}
-    rest = [x for x in todo if cache.get(x.name, {}).get("md5") != md5(x)]
+    rest = [x for x in todo if not known(cache, x)]
     lock = threading.Lock()
 
     def look(path):
@@ -391,8 +416,27 @@ def judge(todo, items, subject, cache_file):
     return cache
 
 
+def canary(folder):
+    """A test picture with big letters on it, looked at before ours: a model that answers false to every question
+    (or copies the form) misses them, and then none of its answers count."""
+    from PIL import Image, ImageDraw, ImageFont
+    f = folder / "canary_writing.png"
+    if not f.exists():
+        img = Image.new("RGB", (768, 432), (196, 160, 110))
+        font = ImageFont.load_default(size=120) if hasattr(ImageFont, "load_default") else None
+        ImageDraw.Draw(img).text((60, 140), "ROME 1999", fill=(20, 20, 20), font=font)
+        img.save(f)
+    return f
+
+
 def md5(path):
     return hashlib.md5(Path(path).read_bytes()).hexdigest()
+
+
+def known(cache, path):
+    """A readable answer for these very bytes."""
+    c = cache.get(path.name, {})
+    return c.get("md5") == md5(path) and parse(c.get("answer", "")) is not None
 
 
 def check_pictures(s, plans, folder):
@@ -417,7 +461,7 @@ def check_pictures(s, plans, folder):
     for attempt in range(3):
         cache = json.loads(cache_file.read_text()) if cache_file.exists() else {}
         here = [x for x in todo if x.exists()]
-        cache = judge([x for x in here if cache.get(x.name, {}).get("md5") != md5(x)], items, subject, cache_file)
+        cache = judge([x for x in here if not known(cache, x)], items, subject, cache_file)
         verdict.update({x: faults(cache[x.name]["answer"]) if x in here else "the redraw did not arrive" for x in todo})
         todo = [x for x in todo if verdict[x]]
         print(f"  pictures: {len(items) - len(todo)} of {len(items)} fit their line", flush=True)

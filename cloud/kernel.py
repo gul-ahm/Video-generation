@@ -1,7 +1,7 @@
 """One stage of a video on Kaggle. The same file runs every stage; the worker writes the stage and the job into RUN.
 
   research  (CPU)            web research, claims, article screenshots, script
-  gpu       (2 x T4)         edit plan, your voice, the pictures
+  gpu       (2 x T4)         edit plan, your voice, the pictures, the picture check, for all the day's videos
   part      (CPU, one each)  one chapter rendered with its effects and sound; all chapters render at the same time
   join      (CPU)            the chapters put together, quality gate, YouTube pack; the film goes to Drive
 
@@ -268,60 +268,86 @@ def chapters():
     return n
 
 
+def report(err):
+    """A failure of the video in RUN to the worker, with its kind: quality (not run again), busy (later) or error."""
+    sys.path.insert(0, str(HOME / "cloud"))
+    if RUN["stage"] in ("gpu", "check") and (HOME / "cloud").exists():
+        checks("put")
+    try:
+        kind = "quality" if isinstance(err, Quality) else "busy" if isinstance(err, Busy) else "error"
+        wait = re.search(r"service busy: wait=(\d+)", str(err)) if kind == "busy" else None
+        hook("failed", error=str(err)[:600], kind=kind, **({"wait": int(wait.group(1))} if wait else {}))
+    except Exception as lost:  # the failure came before the code was unpacked: the worker's watch notices it
+        print(f"  could not report the failure ({lost})", flush=True)
+
+
+def video(stage):
+    """This stage for the video in RUN."""
+    if stage != "research":
+        state("get")
+    if stage in ("gpu", "check"):
+        checks("get")
+    if stage == "join":
+        d = folder() / "chapters"
+        d.mkdir(exist_ok=True)
+        import drive
+        for k in range(RUN["chapters"]):
+            for ext in ("mp4", "json"):
+                if not drive.download(f"job_{RUN['id']}_ch{k}.{ext}", d / f"{k:02d}_cloud.{ext}"):
+                    raise RuntimeError(f"chapter {k + 1} ({ext}) is not on Drive")
+    if stage == "gpu":  # voice and pictures go to Drive before the picture check: a failed check never costs them again
+        work(stage, PICTURE_CHECK="0")
+        state("put")
+        hook("progress", line="voice and pictures saved, checking each picture against its line")
+    if stage == "check" and (folder() / "picture_check.json").exists():  # to set the new verdicts beside
+        print("earlier misses:", [m["file"] for m in json.loads((folder() / "picture_check.json").read_text())["misses"]])
+    work(stage)
+    if stage == "check":
+        checks("put")
+        print((folder() / "picture_check.json").read_text(), flush=True)
+    elif stage in ("research", "gpu"):
+        state("put")
+        hook("done", **({"chapters": chapters()} if stage == "gpu" else {}))
+    elif stage == "part":
+        import drive
+        k = RUN["part"]
+        clip = max((folder() / "chapters").glob(f"{k:02d}_*.mp4"), key=os.path.getmtime)
+        drive.upload(folder() / "chapters" / f"{k:02d}_plan.json", f"job_{RUN['id']}_ch{k}.json")
+        drive.upload(clip, f"job_{RUN['id']}_ch{k}.mp4")
+        hook("done")
+    else:
+        deliver()
+
+
 def main():
+    """One machine, one install, then the stage for each video it was given: the GPU stage takes the whole day's
+    videos in one session (RUN["jobs"]), so Kaggle's GPU queue is waited out once a day, not once a video. Each video
+    reports on its own: its chapters start rendering while the next one's pictures are drawn, and one that fails
+    does not stop the others."""
     stage, t0 = RUN["stage"], time.time()
+    jobs = RUN.pop("jobs", None) or [dict(RUN)]
+    RUN.update(jobs[0])
     try:
         unpack()
         sys.path.insert(0, str(HOME / "cloud"))
         hook("stage")
         install(stage)
-        if stage != "research":
-            state("get")
-        if stage in ("gpu", "check"):
-            checks("get")
-        if stage == "join":
-            d = folder() / "chapters"
-            d.mkdir(exist_ok=True)
-            import drive
-            for k in range(RUN["chapters"]):
-                for ext in ("mp4", "json"):
-                    if not drive.download(f"job_{RUN['id']}_ch{k}.{ext}", d / f"{k:02d}_cloud.{ext}"):
-                        raise RuntimeError(f"chapter {k + 1} ({ext}) is not on Drive")
-        if stage == "gpu":  # voice and pictures go to Drive before the picture check: a failed check never costs them again
-            work(stage, PICTURE_CHECK="0")
-            state("put")
-            hook("progress", line="voice and pictures saved, checking each picture against its line")
-        if stage == "check" and (folder() / "picture_check.json").exists():  # to set the new verdicts beside
-            print("earlier misses:", [m["file"] for m in json.loads((folder() / "picture_check.json").read_text())["misses"]])
-        work(stage)
-        if stage == "check":
-            checks("put")
-            print((folder() / "picture_check.json").read_text(), flush=True)
-            return
-        if stage in ("research", "gpu"):
-            state("put")
-            hook("done", **({"chapters": chapters()} if stage == "gpu" else {}))
-        elif stage == "part":
-            import drive
-            k = RUN["part"]
-            clip = max((folder() / "chapters").glob(f"{k:02d}_*.mp4"), key=os.path.getmtime)
-            drive.upload(folder() / "chapters" / f"{k:02d}_plan.json", f"job_{RUN['id']}_ch{k}.json")
-            drive.upload(clip, f"job_{RUN['id']}_ch{k}.mp4")
-            hook("done")
-        else:
-            deliver()
-        print(f"{stage} done in {(time.time() - t0) / 60:.0f} min", flush=True)
     except BaseException as err:
-        sys.path.insert(0, str(HOME / "cloud"))
-        if stage in ("gpu", "check") and (HOME / "cloud").exists():
-            checks("put")
-        try:
-            kind = "quality" if isinstance(err, Quality) else "busy" if isinstance(err, Busy) else "error"
-            wait = re.search(r"service busy: wait=(\d+)", str(err)) if kind == "busy" else None
-            hook("failed", error=str(err)[:600], kind=kind, **({"wait": int(wait.group(1))} if wait else {}))
-        except Exception as lost:  # the failure came before the code was unpacked: the worker's watch notices it
-            print(f"  could not report the failure ({lost})", flush=True)
+        for job in jobs:
+            RUN.update(job)
+            report(err)
         raise
-
+    for n, job in enumerate(jobs):
+        RUN.update(job)
+        t1 = time.time()
+        try:
+            if n:
+                hook("stage")
+            video(stage)
+            print(f"{stage} of {RUN['title']} done in {(time.time() - t1) / 60:.0f} min", flush=True)
+        except Exception as err:
+            print(f"{stage} of {RUN['title']} failed: {str(err)[:300]}", flush=True)
+            report(err)
+    print(f"{stage} done in {(time.time() - t0) / 60:.0f} min", flush=True)
 
 main()
