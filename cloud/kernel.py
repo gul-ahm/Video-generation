@@ -282,7 +282,8 @@ def main():
         sys.path.insert(0, str(HOME / "cloud"))
         try:
             kind = "quality" if isinstance(err, Quality) else "busy" if isinstance(err, Busy) else "error"
-            hook("failed", error=str(err)[:600], kind=kind)
+            wait = re.search(r"service busy: wait=(\d+)", str(err)) if kind == "busy" else None
+            hook("failed", error=str(err)[:600], kind=kind, **({"wait": int(wait.group(1))} if wait else {}))
         except Exception as lost:  # the failure came before the code was unpacked: the worker's watch notices it
             print(f"  could not report the failure ({lost})", flush=True)
         raise

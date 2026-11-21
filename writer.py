@@ -332,6 +332,9 @@ def eyes(refresh=False):
             dropped.pop(model, None)
         except Exception as err:
             dropped[model] = (str(err)[:90] or "no answer in 30s").replace("\n", " ")
+            reset = re.search(r"retryDelay'?\W+(\d+)s", str(err)) if "PerDay" in str(err) else None
+            if reset:
+                _eyes.setdefault("resets", {})[model] = reset.group(1)
     _eyes["live"], _eyes["at"] = [m for _, m in sorted(timed)], time.time()
     print(f"  vision models: {', '.join(_eyes['live']) or 'none'}" +
           "".join(f"; {m} left out ({why})" for m, why in dropped.items()), flush=True)
@@ -378,7 +381,20 @@ def see(prompt, image):
                         if model in _eyes.get("live", []):
                             _eyes["live"].remove(model)
                         _eyes.setdefault("dropped", {})[model] = why[model][:90]
-    raise SystemExit("service busy: no model could look at " + Path(image).name + " for ten minutes; " +
+                        reset = re.search(r"retryDelay'?\W+(\d+)s", str(err))
+                        if reset:
+                            _eyes.setdefault("resets", {})[model] = reset.group(1)
+    # every model out of its free calls for the day: Google says when they come back, so the stage waits for that
+    # instead of booting a GPU machine every half hour to be refused again
+    resets = [int(x) for x in _eyes.get("resets", {}).values()]
+    spent = bool(why) and all("PerDay" in w or "exceeded your current quota" in w for w in why.values())
+    if spent and not resets:
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/Los_Angeles"))  # the free calls come back at midnight in California
+        resets = [int((now.replace(hour=0, minute=0, second=0) + timedelta(days=1) - now).total_seconds())]
+    wait = f" wait={min(resets)}" if resets and (spent or not _eyes.get("live")) else ""
+    raise SystemExit(f"service busy:{wait} no model could look at " + Path(image).name + " for ten minutes; " +
                      "; ".join(f"{m}: {w}" for m, w in why.items())[:600])
 
 

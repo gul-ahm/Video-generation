@@ -217,12 +217,16 @@ async function joinWhenReady(env, job, all, by) {
 // counting as a failure; what it made is on Drive, so a later run only does the part that needs the service
 const BUSY = 6;  // half hour waits: three hours
 
-async function unitLater(env, job, s, key, u, why) {
+// wait (seconds): the vision API's free calls for the day are used up and come back then; that wait counts once
+async function unitLater(env, job, s, key, u, why, wait) {
   const busy = (u.busy || 0) + 1;
   if (busy > BUSY) return jobFailed(env, job, s, `${key} waited ${BUSY / 2} hours for a service that stayed down: ${why.slice(0, 400)}`);
-  await put(env, unitKey(job, key), { ...u, state: "later", busy, why, nonce: null, after: Date.now() + 25 * 60e3 });
+  const after = Date.now() + Math.max(25 * 60, (wait || 0) + 300) * 1e3;
+  await put(env, unitKey(job, key), { ...u, state: "later", busy, why, nonce: null, after });
+  const when = wait ? `at ${new Date(after).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })} India time, when the free calls of the day come back`
+    : "in half an hour";
   return say(env, `Day ${job.day}: ${key} paused, a service it needs is down (${why.slice(0, 300)}). ` +
-    `Nothing is lost; it runs again in half an hour (${busy} of ${BUSY}).`);
+    `Nothing is lost; it runs again ${when} (${busy} of ${BUSY}).`);
 }
 
 async function unitFailed(env, job, s, key, u, why, retry = true) {
@@ -271,7 +275,7 @@ async function hook(e, env) {
     }
     await advance(env, job, key);
   }
-  if (e.event === "failed" && e.kind === "busy") await unitLater(env, job, s, key, u, e.error || "no reason given");
+  if (e.event === "failed" && e.kind === "busy") await unitLater(env, job, s, key, u, e.error || "no reason given", Number(e.wait) || 0);
   else if (e.event === "failed") await unitFailed(env, job, s, key, u, e.error || "no reason given", e.kind !== "quality");
   if (e.event === "ready") {
     await put(env, unitKey(job, key), { ...u, state: "done", finished: Date.now() });

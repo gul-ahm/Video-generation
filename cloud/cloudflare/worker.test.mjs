@@ -165,3 +165,14 @@ test("a stage whose service is down waits and runs again, without counting as a 
   assert.equal(w.told.filter((t) => /stayed down/.test(t)).length, 1, "after three hours the day fails, once");
   assert.equal(w.state().tries["1"], 1);
 });
+
+test("a stage out of the vision API's free calls waits until they come back", async () => {
+  const w = world();
+  await w.tick();
+  await w.report(w.last("research"), "done");
+  await w.report(w.last("gpu"), "failed", { error: "service busy: wait=7200 quota", kind: "busy", wait: 7200 });
+  const unit = JSON.parse(w.kv.get(`unit:${w.last("gpu").id}:gpu`));
+  assert.equal(unit.state, "later");
+  assert.ok(Math.abs(unit.after - (Date.now() + 7500e3)) < 5000, "two hours and five minutes, not half an hour");
+  assert.match(w.told.at(-1), /free calls of the day come back/);
+});

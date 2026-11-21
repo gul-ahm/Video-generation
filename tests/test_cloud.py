@@ -376,6 +376,18 @@ class Checks(unittest.TestCase):
         self.assertTrue(got.startswith("service busy:"), got)
         self.assertIn("a: 503 busy", got)
 
+    def test_free_calls_used_up_for_the_day_say_when_they_come_back(self):
+        spent = Exception("Error code: 429 - [{'error': {'code': 429, 'message': 'You exceeded your current quota', "
+                          "'details': [{'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier'}, "
+                          "{'retryDelay': '73342s'}]}}]")
+
+        def answer(model, probe):
+            if probe and model == "a":
+                return '{"ok": true}'
+            raise spent
+        got, _, _ = self.vision(answer, listed=())
+        self.assertTrue(got.startswith("service busy: wait=73342 "), got)
+
     def test_a_screenshot_covered_by_a_dialog_is_refused(self):
         sys.path.insert(0, str(ROOT / "documentary"))
         import assets
