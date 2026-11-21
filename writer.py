@@ -311,7 +311,7 @@ def eyes(refresh=False):
     import base64
     import io
     from PIL import Image
-    if _eyes.get("live") and not refresh:
+    if "at" in _eyes and not refresh:  # an empty list is an answer too: asking again at every picture spent calls
         return _eyes["live"]
     named = [os.getenv(k, "") for k in ("LLM_VISION", "LLM_FAST", "LLM_MODEL")] + os.getenv("LLM_FALLBACKS", FALLBACKS).split(",")
     try:
@@ -335,10 +335,12 @@ def eyes(refresh=False):
             reset = re.search(r"retryDelay'?\W+(\d+)s", str(err)) if "PerDay" in str(err) else None
             if reset:
                 _eyes.setdefault("resets", {})[model] = reset.group(1)
-    _eyes["live"], _eyes["at"] = [m for _, m in sorted(timed)], time.time()
-    print(f"  vision models: {', '.join(_eyes['live']) or 'none'}" +
-          "".join(f"; {m} left out ({why})" for m, why in dropped.items()), flush=True)
-    return _eyes["live"]
+    live = [m for _, m in sorted(timed)]
+    if live != _eyes.get("live"):  # Telegram hears of a change, not of every look
+        print(f"  vision models: {', '.join(live) or 'none'}" +
+              "".join(f"; {m} left out ({why})" for m, why in dropped.items()), flush=True)
+    _eyes["live"], _eyes["at"] = live, time.time()
+    return live
 
 
 def see(prompt, image):

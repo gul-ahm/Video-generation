@@ -388,6 +388,17 @@ class Checks(unittest.TestCase):
         got, _, _ = self.vision(answer, listed=())
         self.assertTrue(got.startswith("service busy: wait=73342 "), got)
 
+    def test_no_model_free_is_asked_again_once_a_minute_not_at_every_picture(self):
+        import writer
+        probes = []
+
+        def answer(model, probe):
+            probes.append(model) if probe else None
+            raise Exception("503 UNAVAILABLE")
+        with mock.patch.object(writer, "eyes", wraps=writer.eyes):
+            self.vision(answer, listed=())
+        self.assertLessEqual(len(probes), 3 * 2, "one look at the start and at most one more")
+
     def test_a_screenshot_covered_by_a_dialog_is_refused(self):
         sys.path.insert(0, str(ROOT / "documentary"))
         import assets
