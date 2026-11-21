@@ -3,7 +3,10 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import accumulate
@@ -329,10 +332,50 @@ Not faults: light, weather, colours, camera angle, how many people, or a detail 
 FAULTS = ("later", "writing", "body", "unrelated")
 
 
+def faults(answer):
+    """The faults named in a model's answer (FIT): empty when the picture fits."""
+    got = writer.objects(answer) if isinstance(answer, str) else answer
+    got = got if isinstance(got, dict) else {}
+    return "; ".join(f"{k}: {got[k]}" for k in FAULTS if str(got.get(k) or "").strip())[:200]
+
+
+def judge(todo, items, subject, cache_file):
+    """An answer for every picture in todo, written to cache_file as it comes: first by the open model on this
+    machine's GPUs (vision_local.py, no API calls), then by the Gemini key for any it could not answer. A picture
+    already in the cache with the same bytes is never looked at again, in this run or the next: a run that stops
+    goes on from the picture it reached instead of from the first one."""
+    question = lambda x: FIT.format(subject=subject, line=items[x][1][:400], prompt=items[x][0][:300])
+    if todo and os.getenv("VISION_LOCAL", "1") == "1" and shutil.which("nvidia-smi"):
+        job = cache_file.with_name("vision_todo.json")
+        job.write_text(json.dumps([{"path": str(x), "md5": md5(x), "question": question(x)} for x in todo]))
+        run = subprocess.run([sys.executable, "vision_local.py", job, cache_file], check=False)
+        if run.returncode:
+            print(f"  vision: the GPU model stopped (exit {run.returncode}), the Gemini key looks at the rest", flush=True)
+    cache = json.loads(cache_file.read_text()) if cache_file.exists() else {}
+    rest = [x for x in todo if cache.get(x.name, {}).get("md5") != md5(x)]
+    lock = threading.Lock()
+
+    def look(path):
+        answer = writer.see(question(path), path)
+        with lock:
+            cache[path.name] = {"md5": md5(path), "answer": json.dumps(answer), "by": "gemini"}
+            cache_file.write_text(json.dumps(cache, ensure_ascii=False))
+    with ThreadPoolExecutor(3) as ex:
+        list(ex.map(look, rest))
+    return cache
+
+
+def md5(path):
+    return hashlib.md5(Path(path).read_bytes()).hexdigest()
+
+
 def check_pictures(s, plans, folder):
-    """Every picture looked at by a model that sees, against its own sentence and its era; one that does not fit is
-    drawn again with another seed, twice at most. The result goes to picture_check.json for the quality check, so a
-    film with pictures that miss their line is held, not offered."""
+    """Every picture looked at against its own sentence and its era (judge); one with a fault is drawn again with
+    another seed, twice at most, and only the new picture is looked at again. The verdicts are kept per picture in
+    picture_check_cache.json, so a stopped check goes on where it stopped. The result goes to picture_check.json for
+    the quality check, so a film with pictures that miss their line is held, not offered.
+    PICTURE_CHECK_LIMIT=10 looks at the first ten pictures only and PICTURE_REDRAW=0 draws nothing: a test of the
+    check itself in minutes, on pictures already made."""
     subject = os.getenv("DOC_SUBJECT") or s["title"]
     items = {}
     for i, (ch, plan) in enumerate(zip(s["chapters"], plans)):
@@ -341,20 +384,18 @@ def check_pictures(s, plans, folder):
         for k, ((p, beat, _), path) in enumerate(zip(flat, paths)):
             if path and path.exists():
                 items[path] = (p, ch["shots"][beat][2], 101 + k)
-
-    def look(path):
-        p, line, _ = items[path]
-        got = writer.see(FIT.format(subject=subject, line=line[:400], prompt=p[:300]), path)
-        faults = [f"{k}: {got[k]}" for k in FAULTS if str(got.get(k) or "").strip()]
-        return path, not faults, "; ".join(faults)[:200]
-
-    verdict, todo = {}, list(items)
+    if os.getenv("PICTURE_CHECK_LIMIT"):
+        items = dict(list(items.items())[:int(os.getenv("PICTURE_CHECK_LIMIT"))])
+    cache_file = folder / "picture_check_cache.json"
+    todo, verdict = list(items), {}
     for attempt in range(3):
-        with ThreadPoolExecutor(3) as ex:
-            verdict.update({path: (fits, why) for path, fits, why in ex.map(look, todo)})
-        todo = [x for x in todo if not verdict[x][0]]
+        cache = json.loads(cache_file.read_text()) if cache_file.exists() else {}
+        here = [x for x in todo if x.exists()]
+        cache = judge([x for x in here if cache.get(x.name, {}).get("md5") != md5(x)], items, subject, cache_file)
+        verdict.update({x: faults(cache[x.name]["answer"]) if x in here else "the redraw did not arrive" for x in todo})
+        todo = [x for x in todo if verdict[x]]
         print(f"  pictures: {len(items) - len(todo)} of {len(items)} fit their line", flush=True)
-        if not todo or attempt == 2:
+        if not todo or attempt == 2 or os.getenv("PICTURE_REDRAW", "1") == "0":
             break
         for path in todo:  # the picture and everything made from it (cut out layers, pose frames)
             for f in path.parent.glob(f"{path.stem}.*"):
@@ -362,8 +403,9 @@ def check_pictures(s, plans, folder):
         kaggle_gpu.pictures([(f"{items[x][0]}, true to {subject}, nothing from a later age, no writing",
                               items[x][2] + 1000 * (attempt + 1), x) for x in todo], [])
     (folder / "picture_check.json").write_text(json.dumps({
-        "checked": len(items), "fit": sum(v[0] for v in verdict.values()),
-        "misses": [{"file": x.name, "line": items[x][1][:160], "problem": verdict[x][1]} for x in todo]},
+        "checked": len(items), "fit": len(items) - len(todo),
+        "misses": [{"file": x.name, "line": items[x][1][:160], "problem": verdict[x],
+                    "by": cache.get(x.name, {}).get("by", "")} for x in todo]},
         indent=1, ensure_ascii=False), encoding="utf-8")
 
 
@@ -715,7 +757,7 @@ def pending(path, count):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Long history documentary maker")
-    ap.add_argument("mode", choices=["script", "build", "auto"])
+    ap.add_argument("mode", choices=["script", "build", "auto", "check"])
     ap.add_argument("target", nargs="?", help="topic (script, auto) or output folder (build)")
     ap.add_argument("--file", help="topics file, one topic per line")
     ap.add_argument("--count", type=int, default=2)
@@ -723,6 +765,10 @@ if __name__ == "__main__":
     a = ap.parse_args()
 
     made = []
+    if a.mode == "check":  # only the picture check, on the pictures already in the folder (cloud.py check)
+        s = writer.read_script(Path(a.target) / "script.md")
+        check_pictures(s, writer.edits(Path(a.target), s), Path(a.target))
+        sys.exit()
     if a.mode == "build":
         build(Path(a.target))
         made.append(Path(a.target))

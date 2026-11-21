@@ -69,6 +69,8 @@ def install(stage):
         sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"])
     if stage == "gpu":
         voice_model(pip)
+    if stage == "check":
+        sh(pip + ["transformers>=5.10", "accelerate"])
     if stage == "part":
         node = HOME / "fx" / ".node"
         if not (node / "bin" / "node").exists():
@@ -113,6 +115,20 @@ def folder():
     return HOME / "output" / RUN["slug"]
 
 
+def checks(direction):
+    """The picture check's verdicts (picture_check_cache.json) to or from Drive, a few kB: saved at every progress
+    line and when a stage fails, so the next run looks only at the pictures this one had not reached."""
+    import drive
+    f, name = folder() / "picture_check_cache.json", f"job_{RUN['id']}_pictures.json"
+    try:
+        if direction == "get":
+            drive.download(name, f)
+        elif f.exists():
+            drive.upload(f, name)
+    except Exception as err:  # the verdicts are a saving, never a reason to stop
+        print(f"  picture verdicts not {'loaded' if direction == 'get' else 'saved'} ({str(err)[:80]})", flush=True)
+
+
 def state(direction):
     """The video folder to or from Drive between stages."""
     sys.path.insert(0, str(HOME / "cloud"))
@@ -135,6 +151,9 @@ def work(stage, **extra):
     error carries its last lines, so the message says what broke instead of only "exit status 1"."""
     env = {**os.environ, "STYLE": RUN.get("style", "documentary"), "DOC_STYLE": RUN.get("style", "documentary"), **extra}
     cmd = [sys.executable, "-u", "documentary/doc.py", RUN["title"], str(RUN["minutes"]), RUN.get("subject", "")]
+    if stage == "check":  # cloud.py check: only the picture check, on a few pictures already made, nothing redrawn
+        cmd = [sys.executable, "-u", "make.py", "check", str(folder())]
+        env.update(DOC_SUBJECT=RUN.get("subject", ""), PICTURE_CHECK_LIMIT=str(RUN.get("limit", 10)), PICTURE_REDRAW="0")
     if stage == "research":
         env["RESEARCH_ONLY"] = "1"
     if stage == "gpu":
@@ -151,6 +170,8 @@ def work(stage, **extra):
             if line.strip().startswith(STEPS) and re.search(r"took|done|drawn|fit their line|^screenshots:|^script:|^vision",
                                                             line.strip()):
                 hook("progress", line=line.strip())
+            if line.strip().startswith(("pictures: ", "vision: ")):
+                checks("put")
     if p.returncode:
         said = [l for l in tail if l.strip() and not l.startswith(" " * 4)]
         busy = [l for l in said if l.startswith("service busy:")]
@@ -252,6 +273,8 @@ def main():
         install(stage)
         if stage != "research":
             state("get")
+        if stage in ("gpu", "check"):
+            checks("get")
         if stage == "join":
             d = folder() / "chapters"
             d.mkdir(exist_ok=True)
@@ -264,7 +287,13 @@ def main():
             work(stage, PICTURE_CHECK="0")
             state("put")
             hook("progress", line="voice and pictures saved, checking each picture against its line")
+        if stage == "check" and (folder() / "picture_check.json").exists():  # to set the new verdicts beside
+            print("earlier misses:", [m["file"] for m in json.loads((folder() / "picture_check.json").read_text())["misses"]])
         work(stage)
+        if stage == "check":
+            checks("put")
+            print((folder() / "picture_check.json").read_text(), flush=True)
+            return
         if stage in ("research", "gpu"):
             state("put")
             hook("done", **({"chapters": chapters()} if stage == "gpu" else {}))
@@ -280,6 +309,8 @@ def main():
         print(f"{stage} done in {(time.time() - t0) / 60:.0f} min", flush=True)
     except BaseException as err:
         sys.path.insert(0, str(HOME / "cloud"))
+        if stage in ("gpu", "check") and (HOME / "cloud").exists():
+            checks("put")
         try:
             kind = "quality" if isinstance(err, Quality) else "busy" if isinstance(err, Busy) else "error"
             wait = re.search(r"service busy: wait=(\d+)", str(err)) if kind == "busy" else None

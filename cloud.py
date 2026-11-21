@@ -7,6 +7,7 @@
   python cloud.py tick                         let the worker look at the running video now instead of in 30 minutes
   python cloud.py test                         an 8 minute film through every stage, to check the cloud
   python cloud.py test gpu                     the same film from the gpu stage, with the research already on Drive
+  python cloud.py check 10                     only the picture check, on the test film's first 10 pictures (minutes)
   python cloud.py send output/<folder>         put a folder made on the Mac on Drive, so a later stage can continue it
   python cloud.py worker                       put the Cloudflare worker up (daily start, Telegram Yes and No)
 
@@ -32,6 +33,7 @@ CODE = ["*.py", "dashboard.html", "requirements.txt", "topics.txt", "samples", "
 ASSETS = ["assets/my_voice.wav", "assets/my_voice.ref.wav", "assets/music", "assets/sfx", "assets/fonts",
           "assets/hyperframes", "assets/maps"]
 SKIP = ("__pycache__", ".DS_Store", ".hyperframes", "node_modules")
+TEST = ("The Battle of al-Qadisiyyah: Four Days That Ended an Empire", "Battle of al-Qadisiyyah, 636")  # cloud.py test
 
 
 def pack(paths, out, extra=()):
@@ -121,6 +123,34 @@ def send(folder):
         print("  on Drive:", drive.upload(tgz)[1])
 
 
+def check(n):
+    """The picture check alone on the test film's first n pictures, already on Drive, on a Kaggle GPU: nothing is
+    drawn and no film is made, so a change to the check is tried in minutes before a whole video depends on it."""
+    with tempfile.TemporaryDirectory() as d:
+        title, subject = TEST
+        run = {**push.job(title, 8, subject=subject, day=0), "stage": "check", "limit": n,
+               "code": json.loads((ROOT / ".sync.json").read_text())["code"]}
+        Path(d, "kernel.py").write_text((ROOT / "cloud" / "kernel.py").read_text().replace("__RUN__", json.dumps(run)))
+        ref = f"{push.user()}/studio-check"
+        Path(d, "kernel-metadata.json").write_text(json.dumps({
+            "id": ref, "title": "studio-check", "code_file": "kernel.py", "language": "python", "kernel_type": "script",
+            "is_private": True, "enable_gpu": True, "enable_internet": True, "competition_sources": [],
+            "kernel_sources": [], "dataset_sources": [f"{push.user()}/history-studio-{x}" for x in ("code", "assets", "secrets")],
+            "machine_shape": "NvidiaTeslaT4"}))
+        kg = push.kaggle()
+        subprocess.run([kg, "kernels", "push", "-p", d, "-t", "3600", "--accelerator", "NvidiaTeslaT4"], check=True)
+        for _ in range(120):
+            time.sleep(60)
+            state = subprocess.run([kg, "kernels", "status", ref], capture_output=True, text=True).stdout
+            if re.search(r"COMPLETE|ERROR|CANCEL", state):
+                break
+        print(" ", state.strip())
+        subprocess.run([kg, "kernels", "output", ref, "-p", d], capture_output=True)
+        log = next(Path(d).glob("*.log"), None)
+        lines = "".join(e.get("data", "") for e in json.loads(log.read_text())) if log else ""
+        print("\n".join(l for l in lines.splitlines() if re.search(r"vision|pictures|earlier|misses|problem|fit|Error|exit", l)))
+
+
 def ask(path, body=None):
     """The worker decides what runs on Kaggle; cloud.py only asks it."""
     import drive
@@ -151,8 +181,10 @@ if __name__ == "__main__":
         print(f"  on Drive: chapters {[k + 1 for k in done]} of {n}")
         ask("/start", {"day": d["day"], "from": "join" if len(done) == n else "parts", "chapters": n, "done": done})
     elif args[:1] == ["test"] and len(args) in (1, 2):  # an 8 minute film through every stage, or from one (test gpu)
-        ask("/start", {"day": 0, "title": "The Battle of al-Qadisiyyah: Four Days That Ended an Empire",
-                       "subject": "Battle of al-Qadisiyyah, 636", "minutes": 8, "from": args[1] if len(args) == 2 else "research"})
+        ask("/start", {"day": 0, "title": TEST[0], "subject": TEST[1], "minutes": 8,
+                       "from": args[1] if len(args) == 2 else "research"})
+    elif args[:1] == ["check"] and len(args) in (1, 2):
+        check(int(args[1]) if len(args) == 2 else 10)
     elif args[:1] == ["tick"]:
         ask("/tick")
     elif args[:1] == ["worker"]:

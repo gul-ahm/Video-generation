@@ -266,6 +266,64 @@ class Checks(unittest.TestCase):
             self.assertEqual(redrawn[0][1], 1101)  # another seed
             self.assertFalse((pic.parent / "s1.fg.png").exists())  # the old cut out went with the old picture
 
+    def checked(self, gpu_answers, gemini_answers, cache=None, pictures=3):
+        """check_pictures over a few pictures: the GPU model answers some (by writing the cache, as
+        vision_local.py does), the Gemini key the rest. Returns what each looked at and the result."""
+        import make
+        d = Path(tempfile.mkdtemp())
+        pics = []
+        for k in range(pictures):
+            pic = d / "img" / "00" / f"s{k}.jpg"
+            pic.parent.mkdir(parents=True, exist_ok=True)
+            pic.write_bytes(f"picture {k}".encode())
+            pics.append(pic)
+        if cache:
+            (d / "picture_check_cache.json").write_text(json.dumps(cache(pics)))
+        gpu, gemini = [], []
+
+        def run(cmd, check):
+            todo = json.loads(Path(cmd[2]).read_text())
+            seen = json.loads(Path(cmd[3]).read_text()) if Path(cmd[3]).exists() else {}
+            for item in todo:
+                gpu.append(Path(item["path"]).name)
+                if Path(item["path"]).name in gpu_answers:
+                    seen[Path(item["path"]).name] = {"md5": item["md5"], "answer": gpu_answers[Path(item["path"]).name]}
+            Path(cmd[3]).write_text(json.dumps(seen))
+            return types.SimpleNamespace(returncode=0)
+
+        def see(q, path):
+            gemini.append(path.name)
+            return gemini_answers[path.name]
+        script = {"title": "t", "chapters": [{"shots": [(f"shot {k}", 10, f"line {k}", []) for k in range(pictures)]}]}
+        with mock.patch.object(make, "pictures_of", lambda ch, plan: [(f"shot {k}", k, []) for k in range(pictures)]), \
+                mock.patch.object(make.visuals, "pending", lambda p, f, poses=None: (pics, [], [])), \
+                mock.patch.object(make.shutil, "which", return_value="/usr/bin/nvidia-smi"), \
+                mock.patch.object(make.subprocess, "run", run), mock.patch.object(make.writer, "see", see), \
+                mock.patch.object(make.kaggle_gpu, "pictures", lambda todo, moves: 0), \
+                mock.patch.dict(os.environ, {"PICTURE_REDRAW": "0"}):
+            make.check_pictures(script, [{}], d)
+        return gpu, gemini, json.loads((d / "picture_check.json").read_text())
+
+    def test_the_gpu_model_looks_first_and_the_gemini_key_only_at_what_it_could_not(self):
+        ok = '{"later": "", "writing": "", "body": "", "unrelated": ""}'
+        gpu, gemini, got = self.checked({"s0.jpg": ok, "s1.jpg": '{"later": "folding chairs"}'},
+                                        {"s2.jpg": {"later": ""}})
+        self.assertEqual((gpu, gemini), (["s0.jpg", "s1.jpg", "s2.jpg"], ["s2.jpg"]))
+        self.assertEqual((got["fit"], [m["problem"] for m in got["misses"]]), (2, ["later: folding chairs"]))
+
+    def test_a_check_that_stopped_goes_on_from_the_picture_it_reached(self):
+        import make
+        ok = '{"later": ""}'
+        seen = lambda pics: {p.name: {"md5": make.md5(p), "answer": ok} for p in pics[:2]}
+        gpu, gemini, got = self.checked({"s2.jpg": ok}, {}, cache=seen)
+        self.assertEqual((gpu, gemini, got["fit"]), (["s2.jpg"], [], 3))
+
+    def test_a_picture_drawn_again_is_looked_at_again(self):
+        import make
+        stale = lambda pics: {p.name: {"md5": "an older picture", "answer": '{"later": ""}'} for p in pics}
+        gpu, _, _ = self.checked({f"s{k}.jpg": '{"later": ""}' for k in range(3)}, {}, cache=stale)
+        self.assertEqual(gpu, ["s0.jpg", "s1.jpg", "s2.jpg"])
+
     def test_an_article_shows_briefly_then_the_beat_has_its_own_pictures(self):
         import make
         with tempfile.TemporaryDirectory() as d:
