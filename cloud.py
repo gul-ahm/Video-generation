@@ -84,6 +84,10 @@ def stamp(patterns=CODE, extra=()):
 def sync():
     """The three datasets, each only when what it holds changed since the last sync that Kaggle confirmed (the
     assets took 1.5 hours to upload and process when they had not changed). The fingerprints live in .sync.json."""
+    env = dict(l.split("=", 1) for l in (ROOT / ".env.example").read_text().splitlines() if "=" in l and l[0] != "#")
+    empty = [k for k in ("LLM_API_KEY", "HF_TOKEN") if not env.get(k, "").strip()]
+    if empty:  # an empty key on Kaggle fails every video at research; stop here instead
+        raise SystemExit(f"{', '.join(empty)} empty in .env.example; nothing uploaded")
     secrets = [(p, f"secrets/{p.name}") for p in (ROOT / "secrets").glob("*") if p.suffix in (".json", ".env")]
     secrets += [(Path.home() / ".kaggle" / "kaggle.json", "secrets/kaggle.json"), (ROOT / ".env.example", "secrets/env.txt")]
     version = stamp()

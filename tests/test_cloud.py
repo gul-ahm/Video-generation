@@ -99,9 +99,19 @@ class Sync(unittest.TestCase):
                     mock.patch.object(cloud, "stamp", side_effect=lambda *a: "same"), \
                     mock.patch.object(Path, "home", return_value=Path(d)):
                 (Path(d) / "secrets").mkdir()
+                (Path(d) / ".env.example").write_text("LLM_API_KEY=k\nHF_TOKEN=t\n")
                 cloud.sync()
                 cloud.sync()
             self.assertEqual(sent, ["code", "assets", "secrets"])
+
+    def test_an_empty_key_stops_the_sync_before_anything_is_uploaded(self):
+        import cloud
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".env.example").write_text("# key\nLLM_API_KEY=\nHF_TOKEN=t\n")
+            with mock.patch.object(cloud, "ROOT", Path(d)), mock.patch.object(cloud, "dataset") as up, \
+                    self.assertRaisesRegex(SystemExit, "LLM_API_KEY empty"):
+                cloud.sync()
+            up.assert_not_called()
 
 
 class Gate(unittest.TestCase):
