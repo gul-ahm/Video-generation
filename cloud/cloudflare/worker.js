@@ -478,14 +478,16 @@ async function kagglePush(env, run) {
   const me = env.KAGGLE_USERNAME;
   const name = kernelName(run);
   const gpu = run.stage === "gpu";
-  // the GPU session makes every video of the batch: about an hour each, and Kaggle allows 12
-  const hours = gpu ? Math.min(12, 1 + 1.5 * (run.jobs || [run]).length) : LIMIT[run.stage];
   const body = {
     slug: `${me}/${name}`, newTitle: name, text: code.replace("__RUN__", JSON.stringify(run)),
     language: "python", kernelType: "script", isPrivate: true, enableGpu: gpu, enableTpu: false, enableInternet: true,
     datasetDataSources: ["code", "assets", "secrets"].map((x) => `${me}/history-studio-${x}`),
     competitionDataSources: [], kernelDataSources: [], modelDataSources: [], categoryIds: [],
-    sessionTimeoutSeconds: hours * 3600, ...(gpu ? { machineShape: "NvidiaTeslaT4" } : {}),
+    // a GPU kernel goes as a notebook saved in the browser does: no machine shape, no time limit (the default is
+    // two T4s and Kaggle's own 12 hours). With machineShape "NvidiaTeslaT4" and a time limit set, every push waited
+    // in Kaggle's queue for hours, on 21 and 22 November up to 13, while the same kernel without them started in
+    // six seconds on the same two T4s
+    ...(gpu ? {} : { sessionTimeoutSeconds: LIMIT[run.stage] * 3600 }),
   };
   const auth = "Basic " + btoa(`${me}:${env.KAGGLE_KEY}`);
   const r = await fetch("https://www.kaggle.com/api/v1/kernels/push", {

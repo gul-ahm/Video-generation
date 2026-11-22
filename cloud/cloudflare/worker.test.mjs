@@ -16,7 +16,7 @@ function world({ refuse = () => false, status = () => "running", perDay = 1 } = 
     if (String(url).includes("kernels/push")) {
       const run = JSON.parse(body.text.match(/RUN = (.*)/)[1]);
       if (refuse(run)) return new Response(JSON.stringify({ error: "Maximum batch CPU session count reached" }));
-      pushes.push({ ...run, kernel: body.slug, hours: body.sessionTimeoutSeconds / 3600 });
+      pushes.push({ ...run, kernel: body.slug, limit: body.sessionTimeoutSeconds, shape: body.machineShape, gpuOn: body.enableGpu });
       return new Response(JSON.stringify({ ref: body.slug }));
     }
     if (String(url).includes("kernels/status")) return new Response(JSON.stringify({ status: status(String(url)) }));
@@ -214,7 +214,8 @@ test("the day's videos start together and share one GPU session after all their 
   const gpu = w.pushes.filter((r) => r.stage === "gpu");
   assert.equal(gpu.length, 1);
   assert.deepEqual(gpu[0].jobs.map((j) => j.day), [1, 2, 3]);
-  assert.deepEqual([gpu[0].kernel, gpu[0].hours], ["u/studio-gpu", 5.5], "an hour and a half a video, within Kaggle's 12");
+  assert.deepEqual([gpu[0].kernel, gpu[0].gpuOn, gpu[0].shape, gpu[0].limit], ["u/studio-gpu", true, undefined, undefined],
+    "pushed like a notebook saved in the browser: a machine shape or a time limit put it in a queue for hours");
 });
 
 test("a video's chapters render while the GPU makes the next one, each on its own kernels", async () => {

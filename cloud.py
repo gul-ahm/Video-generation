@@ -193,10 +193,9 @@ def check(n):
         Path(d, "kernel-metadata.json").write_text(json.dumps({
             "id": ref, "title": "studio-check", "code_file": "kernel.py", "language": "python", "kernel_type": "script",
             "is_private": True, "enable_gpu": True, "enable_internet": True, "competition_sources": [],
-            "kernel_sources": [], "dataset_sources": [f"{push.user()}/history-studio-{x}" for x in ("code", "assets", "secrets")],
-            "machine_shape": "NvidiaTeslaT4"}))
+            "kernel_sources": [], "dataset_sources": [f"{push.user()}/history-studio-{x}" for x in ("code", "assets", "secrets")]}))
         kg = push.kaggle()
-        subprocess.run([kg, "kernels", "push", "-p", d, "-t", "3600", "--accelerator", "NvidiaTeslaT4"], check=True)
+        subprocess.run([kg, "kernels", "push", "-p", d], check=True)
         for _ in range(120):
             time.sleep(60)
             state = subprocess.run([kg, "kernels", "status", ref], capture_output=True, text=True).stdout

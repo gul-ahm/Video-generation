@@ -3,7 +3,8 @@
 The Mac writes every prompt of the video into one small Kaggle script, pushes it as a private notebook and waits.
 On Kaggle the script downloads the same picture model and LoRAs, draws the pictures and the pose frames on both
 GPUs and ends. A pushed notebook is a batch run: the session closes by itself the moment the script ends, and
-the push carries a time limit too, so no GPU hours keep running after the work. The Mac then fetches the pictures,
+so no GPU hours keep running after the work (no time limit or machine shape is set: either one put the run in a
+queue for hours). The Mac then fetches the pictures,
 does the paper level, the upscale and the frame (visuals.finish) and puts them where the build looks for them.
 Whatever Kaggle did not deliver is drawn on the Mac as before.
 
@@ -277,13 +278,13 @@ def pictures(todo, moves):
     (folder / "kernel-metadata.json").write_text(json.dumps({
         "id": ref, "title": SLUG, "code_file": "pictures.py", "language": "python", "kernel_type": "script",
         "is_private": True, "enable_gpu": True, "enable_internet": True, "dataset_sources": [],
-        "competition_sources": [], "kernel_sources": [], "machine_shape": "NvidiaTeslaT4"}))
+        "competition_sources": [], "kernel_sources": []}))
     limit = min(3 * 3600, 900 + 30 * len(jobs))  # the session closes at this limit even if something hangs
     if waiting:
         print(f"  kaggle: the same {len(jobs)} pictures are already {waiting} on Kaggle, waiting for that run", flush=True)
     else:
         print(f"  kaggle: {len(jobs)} pictures go to the Kaggle GPU (time limit {limit // 60} min)", flush=True)
-        push = cli("kernels", "push", "-p", str(folder), "-t", str(limit), "--accelerator", "NvidiaTeslaT4")
+        push = cli("kernels", "push", "-p", str(folder))  # no machine shape or time limit: those wait hours in Kaggle's queue
         if push.returncode:
             print(f"  kaggle: push failed, pictures stay on the Mac ({(push.stderr or push.stdout).strip()[-160:]})")
             return 0
