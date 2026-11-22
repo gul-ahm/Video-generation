@@ -139,7 +139,7 @@ function newJob(d, slot = 0) {
   const slug = slugOf(d.title);
   return { id: slug.slice(0, 40), day: d.day, title: d.title, status: "running", started: new Date().toISOString(),
            run: { id: slug.slice(0, 40), title: d.title, minutes: d.minutes || 22, style: "documentary", slug,
-                  subject: d.subject || "", day: d.day, slot },
+                  subject: d.subject || "", day: d.day, slot, ...(d.smoke ? { smoke: true } : {}) },
            chapters: null, feedback: [] };
 }
 
@@ -152,16 +152,16 @@ async function batchJobs(env, s) {
 async function pushGpu(env, jobs) {
   const nonce = crypto.randomUUID().slice(0, 8);
   const run = { ...jobs[0].run, stage: "gpu", nonce, jobs: jobs.map((j) => j.run) };
-  let ok = null;
+  let ok = null, code = null;
   try {
-    await kagglePush(env, run);
+    code = await kagglePush(env, run);
   } catch (err) {
     ok = String(err).slice(0, 200);
   }
   for (const job of jobs) {
     const u = await get(env, unitKey(job, "gpu"), { tries: 0 });
     await put(env, unitKey(job, "gpu"), ok === null
-      ? { ...u, state: "pushed", nonce, at: Date.now(), waiting: null, started: null, batch: jobs.map((j) => j.id) }
+      ? { ...u, state: "pushed", nonce, at: Date.now(), waiting: null, started: null, code, batch: jobs.map((j) => j.id) }
       : { ...u, state: "waiting", nonce: null, waiting: u.waiting || Date.now(), why: ok });
   }
   return ok === null ? "pushed" : "waiting";
@@ -192,8 +192,8 @@ async function pushUnit(env, job, key, u = { tries: 0 }) {
   const run = { ...job.run, stage: kindOf(key), nonce: crypto.randomUUID().slice(0, 8),
                 ...(key.startsWith("part") ? { part: Number(key.slice(4)) } : {}), chapters: job.chapters };
   try {
-    await kagglePush(env, run);
-    u = { ...u, state: "pushed", nonce: run.nonce, at: Date.now(), waiting: null };
+    const code = await kagglePush(env, run);
+    u = { ...u, state: "pushed", nonce: run.nonce, at: Date.now(), waiting: null, code };
   } catch (err) {
     u = { ...u, state: "waiting", nonce: null, waiting: u.waiting || Date.now(), why: String(err).slice(0, 200) };
   }
@@ -204,13 +204,13 @@ async function pushUnit(env, job, key, u = { tries: 0 }) {
 async function startJob(env, day, from = "research", extra = {}) {
   const plan = await get(env, "plan", { days: [] });
   // day 0 is a test film from cloud.py test: its own title, not in the plan and not counted
-  const d = day === 0 && extra.title ? { day: 0, title: extra.title, subject: extra.subject, minutes: extra.minutes }
+  const d = day === 0 && extra.title ? { day: 0, title: extra.title, subject: extra.subject, minutes: extra.minutes, smoke: extra.smoke }
     : plan.days.find((x) => x.day === day);
   if (!d) return `Day ${day} is not in the plan.`;
   const s = await state(env);
   const running = await batchJobs(env, s);
-  const same = running.find((j) => j.day === day);
-  if (running.length && !same) return `Days ${running.map((j) => j.day).join(", ")} are still running.`;
+  const same = running.find((j) => j.id === newJob(d).id);  // by the video, not the day: test and smoke are both day 0
+  if (running.length && !same) return `${running.map((j) => j.title).join(", ")} still running; this starts after it.`;
   const job = { ...newJob(d, same?.run.slot || 0), chapters: extra.chapters ?? null };
   for (const k of (await env.KV.list({ prefix: `unit:${job.id}:` })).keys) await env.KV.delete(k.name);  // a fresh run
   const done = extra.done || [];
@@ -265,7 +265,8 @@ async function jobFailed(env, job, s, why) {
   job.status = "failed";
   job.error = why;
   await put(env, `job:${job.id}`, job);
-  await say(env, `Day ${job.day}: ${why}\n${failedDay(s, job.day)}`);
+  await say(env, `${job.run.smoke ? "SMOKE FILM failed, the daily videos keep the code they have" : `Day ${job.day}`}: ${why}\n` +
+    failedDay(s, job.day));
   await batchEnded(env, s);
   await gpuWhenReady(env, s);  // the others may have been waiting for this one's research
 }
@@ -378,7 +379,12 @@ async function hook(e, env) {
     Object.assign(job, { status: "ready", link: e.link, ready: new Date().toISOString() });
     await put(env, `job:${job.id}`, job);
     await batchEnded(env, s);
-    if (job.day === 0) await say(env, `TEST FILM, not for publishing\n\n${readyText(e)}`);
+    if (job.run.smoke) {  // every stage worked on this code: cloud.py smoke now gives it to the day's videos
+      const code = (await get(env, unitKey(job, "join"), {})).code;
+      await env.KV.put("smoke_passed", code || "");
+      await say(env, `SMOKE FILM passed: every stage worked on code ${code}. It becomes the code of the daily videos.\n` +
+        `Quality (not checked for a smoke film): ${e.quality || "?"}\nWatch: ${e.link}`);
+    } else if (job.day === 0) await say(env, `TEST FILM, not for publishing\n\n${readyText(e)}`);
     else await say(env, readyText(e), [[{ text: "Yes, publish", callback_data: `yes:${job.id}` },
                                         { text: "No", callback_data: `no:${job.id}` }]]);
   }
@@ -474,14 +480,18 @@ async function tick(env) {
 async function kagglePush(env, run) {
   const code = await env.KV.get("kernel");
   if (!code) throw new Error("kernel.py is not in KV, run: python cloud.py worker");
-  run = { ...run, code: await env.KV.get("code_version") };  // the kernel stops if Kaggle mounts other code
+  // the day's videos run the code the last smoke film passed (history-studio-code-good); a test or smoke film runs
+  // what was synced last (history-studio-code), so a change reaches the daily videos only after a whole film
+  const good = await env.KV.get("good_version");
+  const latest = run.day === 0 || !good;
+  run = { ...run, code: latest ? await env.KV.get("code_version") : good };  // the kernel stops on other code
   const me = env.KAGGLE_USERNAME;
   const name = kernelName(run);
   const gpu = run.stage === "gpu";
   const body = {
     slug: `${me}/${name}`, newTitle: name, text: code.replace("__RUN__", JSON.stringify(run)),
     language: "python", kernelType: "script", isPrivate: true, enableGpu: gpu, enableTpu: false, enableInternet: true,
-    datasetDataSources: ["code", "assets", "secrets"].map((x) => `${me}/history-studio-${x}`),
+    datasetDataSources: [latest ? "code" : "code-good", "assets", "secrets"].map((x) => `${me}/history-studio-${x}`),
     competitionDataSources: [], kernelDataSources: [], modelDataSources: [], categoryIds: [],
     // a GPU kernel goes as a notebook saved in the browser does: no machine shape, no time limit (the default is
     // two T4s and Kaggle's own 12 hours). With machineShape "NvidiaTeslaT4" and a time limit set, every push waited
@@ -495,7 +505,7 @@ async function kagglePush(env, run) {
   });
   const out = await r.json().catch(() => ({}));
   if (!r.ok || out.error) throw new Error(`Kaggle push: ${r.status} ${out.error || out.message || ""}`.trim());
-  return out;
+  return run.code;
 }
 
 // ---------- publish slots ----------

@@ -8,6 +8,8 @@
   python cloud.py tick                         let the worker look at the running video now instead of in 30 minutes
   python cloud.py test                         an 8 minute film through every stage, to check the cloud
   python cloud.py test gpu                     the same film from the gpu stage, with the research already on Drive
+  python cloud.py smoke                        a one minute film through every stage; passed, its code goes to the
+                                               daily videos (which only ever run code a smoke film passed)
   python cloud.py check 10                     only the picture check, on the test film's first 10 pictures (minutes)
   python cloud.py send output/<folder>         put a folder made on the Mac on Drive, so a later stage can continue it
   python cloud.py worker                       put the Cloudflare worker up (daily start, Telegram Yes and No)
@@ -40,6 +42,7 @@ SKIP = ("__pycache__", ".DS_Store", ".hyperframes", "node_modules")
 REPO = "gul-ahm/Video-generation"
 # the Mac's own files, never replaced by a deploy: the keys, the channel plan, the topics, the runner that runs it
 MINE = {".env.example", "plan.json", "topics.txt", "_runner.sh", "History Studio.command"}
+SMOKE = ("Smoke Test: The Battle of Yarmouk in One Minute", "Battle of Yarmouk, 636")  # cloud.py smoke
 TEST = ("The Battle of al-Qadisiyyah: Four Days That Ended an Empire", "Battle of al-Qadisiyyah, 636")  # cloud.py test
 
 
@@ -59,13 +62,13 @@ def live(slug):
     return datetime.strptime(found[-1], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc) if found else None
 
 
-def dataset(name, tgz):
+def dataset(name, tgz, file=None):
     """A new version of a dataset, checked until Kaggle lists it. The kaggle tool once said ok for a code version that
     never appeared, and the kernels of a whole test film ran the code from before."""
     me = push.user()
     slug, start = f"{me}/history-studio-{name}", datetime.now(timezone.utc) - timedelta(seconds=30)
     with tempfile.TemporaryDirectory() as d:
-        Path(d, f"{name}.tgz").write_bytes(Path(tgz).read_bytes())
+        Path(d, file or f"{name}.tgz").write_bytes(Path(tgz).read_bytes())
         Path(d, "dataset-metadata.json").write_text(json.dumps({"id": slug, "title": slug.split("/")[1],
                                                                 "licenses": [{"name": "unknown"}]}))
         k = push.kaggle()
@@ -170,6 +173,46 @@ def sync():
         worker.kv_files(version=version)
 
 
+def smoke():
+    """A one minute film through every stage on the code just synced; when the join delivers it, that code becomes
+    the code of the daily videos (promote). A change reaches them only after a whole film went through: before,
+    each new piece was first tried on a real day's video and a bug was found two hours in."""
+    import worker
+    title, subject = SMOKE
+    for _ in range(36):  # a film still running goes first (six hours at most)
+        if "still running" not in ask("/start", {"day": 0, "title": title, "subject": subject, "minutes": 1, "smoke": True}):
+            break
+        time.sleep(600)
+    else:
+        raise SystemExit("the smoke film could not start: other videos ran for six hours")
+    cf, key = worker.Cloudflare(), f"job:{push.job(title)['id']}"
+    space = cf.kv()
+    for _ in range(180):  # three hours at most; a smoke film takes about forty minutes
+        time.sleep(60)
+        job = json.loads(cf.get(space, key) or "{}")
+        if job.get("status") not in (None, "running"):
+            break
+    if job.get("status") != "ready":
+        raise SystemExit(f"smoke film {job.get('status', 'not started')}: {job.get('error', '')[:600]}\n"
+                         "The daily videos keep the code they had.")
+    promote()
+
+
+def promote():
+    """The code that passed the smoke film into history-studio-code-good, which the daily videos run."""
+    import worker
+    cf = worker.Cloudflare()
+    space, version = cf.kv(), stamp()
+    if cf.get(space, "smoke_passed") != version:
+        raise SystemExit(f"the code here ({version}) is not the code the last smoke film passed; run: python cloud.py smoke")
+    with tempfile.TemporaryDirectory() as d:
+        Path(d, "VERSION").write_text(version)
+        pack(CODE, f"{d}/code.tgz", [(Path(d, "VERSION"), "VERSION")])
+        dataset("code-good", f"{d}/code.tgz", file="code.tgz")
+    cf.put(space, "good_version", version)
+    print(f"  the daily videos now run code {version}", flush=True)
+
+
 def send(folder):
     import drive
     folder = Path(folder)
@@ -215,7 +258,9 @@ def ask(path, body=None):
     w = drive.env("worker")
     r = requests.post(w["WORKER_URL"] + path, json=body or {}, headers={"X-Studio-Secret": w["HOOK_SECRET"]}, timeout=120)
     r.raise_for_status()
-    print(" ", r.json().get("message", r.text))
+    said = r.json().get("message", r.text)
+    print(" ", said, flush=True)
+    return said
 
 
 def plan_day(n):
@@ -242,6 +287,10 @@ if __name__ == "__main__":
     elif args[:1] == ["test"] and len(args) in (1, 2):  # an 8 minute film through every stage, or from one (test gpu)
         ask("/start", {"day": 0, "title": TEST[0], "subject": TEST[1], "minutes": 8,
                        "from": args[1] if len(args) == 2 else "research"})
+    elif args == ["smoke"]:
+        smoke()
+    elif args == ["promote"]:
+        promote()
     elif args[:1] == ["check"] and len(args) in (1, 2):
         check(int(args[1]) if len(args) == 2 else 10)
     elif args[:1] == ["tick"]:

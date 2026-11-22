@@ -497,7 +497,7 @@ def plan_gate(s, plans, voices, folder):
     miss = qa.misses(got)
     (folder / "plan_gate.json").write_text(json.dumps({"measured": got, "misses": miss}, indent=1), encoding="utf-8")
     print(f"  plan: {len(got) - len(miss)} of {len(got)} checks pass before rendering", flush=True)
-    if miss and STRICT:
+    if miss and STRICT and os.getenv("SMOKE") != "1":  # a smoke film goes on to test the render and the join
         raise SystemExit("plan gate: the film would be held, so nothing is rendered. " + "; ".join(miss))
 
 

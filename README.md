@@ -242,6 +242,10 @@ Faults are found where they are made, not after a whole film:
   it misses, instead of after an hour on five machines. Only loudness and movement wait for the finished film.
 - **Small tests first**: `python cloud.py check 10` runs the picture check alone on the test film's first ten
   pictures (minutes, nothing drawn), before a whole video depends on a change.
+- **The daily videos only run code a whole film went through**: `python cloud.py smoke` sends a one minute film
+  through every stage on the code just synced (`history-studio-code`); when its join delivers, that code is copied
+  to `history-studio-code-good`, which every daily video runs. A test or smoke film runs the newest code. A change
+  that breaks a stage stops the smoke film, and the day's videos go on with the code they had.
 - **One way to put code on the Mac**: `python cloud.py deploy [commit]` takes a GitHub commit, writes every file but
   the Mac's own (`.env.example`, `plan.json`, `topics.txt`, the runner), compares each byte for byte, runs the tests
   (and puts the old files back if they fail), then syncs the datasets and, when it changed, the worker.

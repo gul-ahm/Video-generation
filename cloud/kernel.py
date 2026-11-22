@@ -54,7 +54,8 @@ def unpack():
     # IMAGE_ENGINE: a picture's file name comes from the engine, which follows the device; without it the CPU render
     # looked for other names than the GPU stage had drawn and found none of the 114 pictures
     extra = {"CLOUD": "1", "KAGGLE_LOCAL": "1", "KAGGLE": "1", "MAC_PICTURES": "0", "CHATTER_BACKEND": "torch",
-             "ASK_CLEAN": "0", "PREWRITE": "0", "IMAGE_ENGINE": "local", "STRICT": "1"}
+             "ASK_CLEAN": "0", "PREWRITE": "0", "IMAGE_ENGINE": "local", "STRICT": "1",
+             **({"SMOKE": "1"} if RUN.get("smoke") else {})}
     lines = (HOME / "secrets" / "env.txt").read_text().splitlines()
     lines = [l for l in lines if l.split("=", 1)[0] not in extra] + [f"{k}={v}" for k, v in extra.items()]
     (HOME / ".env").write_text("\n".join(lines) + "\n")
@@ -206,6 +207,8 @@ def deliver():
     import drive
     f = folder()
     summary, fix, blocking = quality(f)
+    if RUN.get("smoke"):  # a smoke film tests that every stage works; a one minute film is not judged as a video
+        blocking = [b for b in blocking if b.startswith("only")]
     if not summary:
         raise RuntimeError("the quality check did not run (qa.md missing)")
     name = f"{RUN['slug']}{'_held' if blocking else ''}.mp4"

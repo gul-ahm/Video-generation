@@ -16,7 +16,8 @@ function world({ refuse = () => false, status = () => "running", perDay = 1 } = 
     if (String(url).includes("kernels/push")) {
       const run = JSON.parse(body.text.match(/RUN = (.*)/)[1]);
       if (refuse(run)) return new Response(JSON.stringify({ error: "Maximum batch CPU session count reached" }));
-      pushes.push({ ...run, kernel: body.slug, limit: body.sessionTimeoutSeconds, shape: body.machineShape, gpuOn: body.enableGpu });
+      pushes.push({ ...run, kernel: body.slug, limit: body.sessionTimeoutSeconds, shape: body.machineShape, gpuOn: body.enableGpu,
+                    dataset: body.datasetDataSources[0].split("/")[1] });
       return new Response(JSON.stringify({ ref: body.slug }));
     }
     if (String(url).includes("kernels/status")) return new Response(JSON.stringify({ status: status(String(url)) }));
@@ -273,4 +274,48 @@ test("the batch is only as big as the week's GPU hours allow", async () => {
   w.kv.set("state", JSON.stringify({ ...s, gpu: { [d.toISOString().slice(0, 10)]: 25 }, gpu_runs: { x: 1.5 } }));
   await w.tick();
   assert.equal(w.pushes.filter((r) => r.stage === "research").length, 2, "29 h a week, 25 used, 1.5 a video");
+});
+
+// ---------- smoke film and the code the daily videos run ----------
+
+test("the daily videos run the code the last smoke film passed; test films run the newest", async () => {
+  const w = world();
+  w.kv.set("code_version", "new1");
+  w.kv.set("good_version", "good0");
+  await w.tick();
+  assert.deepEqual([w.last("research").code, w.last("research").dataset], ["good0", "history-studio-code-good"]);
+  const t = world();
+  t.kv.set("code_version", "new1");
+  t.kv.set("good_version", "good0");
+  await t.call("/start", { day: 0, title: "A test", subject: "x", minutes: 8 });
+  assert.deepEqual([t.last("research").code, t.last("research").dataset], ["new1", "history-studio-code"]);
+});
+
+test("before any smoke film has passed, the daily videos run the newest code", async () => {
+  const w = world();
+  w.kv.set("code_version", "new1");
+  await w.tick();
+  assert.deepEqual([w.last("research").code, w.last("research").dataset], ["new1", "history-studio-code"]);
+});
+
+test("a smoke film that gets through every stage marks its code as passed, without Yes or No", async () => {
+  const w = world();
+  w.kv.set("code_version", "cand7");
+  await w.call("/start", { day: 0, title: "Smoke test", subject: "x", minutes: 1, smoke: true });
+  assert.equal(w.last("research").smoke, true);
+  await w.report(w.last("research"), "done");
+  await w.report(w.last("gpu"), "done", { chapters: 1 });
+  await w.report(w.last("part", 0), "done");
+  await w.report(w.last("join"), "ready", { link: "L", quality: "9 of 15 checks pass" });
+  assert.equal(w.kv.get("smoke_passed"), "cand7");
+  assert.ok(w.told.some((t) => /SMOKE FILM passed/.test(t)));
+  assert.ok(!w.told.some((t) => /Video ready/.test(t)), "no Yes or No for a smoke film");
+});
+
+test("a smoke film does not take the place of a test film that is still running", async () => {
+  const w = world();
+  await w.call("/start", { day: 0, title: "A test", subject: "x", minutes: 8 });
+  const out = await w.call("/start", { day: 0, title: "Smoke test", subject: "x", minutes: 1, smoke: true });
+  assert.match(out.message, /still running/);
+  assert.equal(w.pushes.filter((r) => r.stage === "research").length, 1);
 });

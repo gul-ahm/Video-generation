@@ -238,6 +238,48 @@ class Gate(unittest.TestCase):
             hook.assert_not_called()
 
 
+    def test_a_smoke_film_is_delivered_with_failed_checks_but_not_with_missing_ones(self):
+        run = {"id": "smoke", "title": "Smoke", "slug": "smoke", "stage": "join", "nonce": "n", "day": 0, "smoke": True}
+        for text, held in ((qa_md(["longest same picture (s)"]), False),
+                           ("\n".join(l for l in qa_md().splitlines() if "pictures that fit" not in l), True)):
+            with tempfile.TemporaryDirectory() as d:
+                k = kernel(run, home=d)
+                f = Path(d) / "output" / "smoke"
+                f.mkdir(parents=True)
+                (f / "final.mp4").write_bytes(b"v")
+                (f / "qa.md").write_text(text)
+                fake = types.SimpleNamespace(upload=mock.Mock(return_value=("id", "LINK")))
+                with mock.patch.dict(sys.modules, {"drive": fake}), mock.patch.object(k, "hook") as hook:
+                    if held:
+                        with self.assertRaises(k.Quality):
+                            k.deliver()
+                    else:
+                        k.deliver()
+                        self.assertEqual(hook.call_args.args[0], "ready")
+
+
+class Promote(unittest.TestCase):
+    def promote(self, passed):
+        import cloud
+        kv = {"smoke_passed": passed}
+        cf = types.SimpleNamespace(kv=lambda: "s", get=lambda space, k: kv.get(k), put=lambda space, k, v: kv.update({k: v}))
+        up = mock.Mock()
+        with mock.patch.dict(sys.modules, {"worker": types.SimpleNamespace(Cloudflare=lambda: cf)}), \
+                mock.patch.object(cloud, "stamp", return_value="v1"), mock.patch.object(cloud, "pack"), \
+                mock.patch.object(cloud, "dataset", up):
+            cloud.promote()
+        return kv, up
+
+    def test_the_code_a_smoke_film_passed_goes_to_the_daily_videos(self):
+        kv, up = self.promote("v1")
+        self.assertEqual(kv["good_version"], "v1")
+        self.assertEqual((up.call_args.args[0], up.call_args.kwargs["file"]), ("code-good", "code.tgz"))
+
+    def test_other_code_than_the_smoke_film_passed_is_refused(self):
+        with self.assertRaisesRegex(SystemExit, "not the code the last smoke film passed"):
+            self.promote("v0")
+
+
 class Checks(unittest.TestCase):
     """The five checks added after the test film: what the eye sees in a documentary."""
 
