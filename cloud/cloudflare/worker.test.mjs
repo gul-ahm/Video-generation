@@ -216,7 +216,7 @@ test("the day's videos start together and share one GPU session after all their 
   const gpu = w.pushes.filter((r) => r.stage === "gpu");
   assert.equal(gpu.length, 1);
   assert.deepEqual(gpu[0].jobs.map((j) => j.day), [1, 2, 3]);
-  assert.deepEqual([gpu[0].kernel, gpu[0].gpuOn, gpu[0].shape, gpu[0].limit], ["u/studio-gpu", true, undefined, undefined],
+  assert.deepEqual([gpu[0].kernel.slice(0, 13), gpu[0].gpuOn, gpu[0].shape, gpu[0].limit], ["u/studio-gpu-", true, undefined, undefined],
     "pushed like a notebook saved in the browser: a machine shape or a time limit put it in a queue for hours");
 });
 
@@ -321,16 +321,16 @@ test("a smoke film does not take the place of a test film that is still running"
   assert.equal(w.pushes.filter((r) => r.stage === "research").length, 1);
 });
 
-test("no GPU run is pushed while another studio-gpu run is still queued on Kaggle", async () => {
-  let other = "queued";
-  const w = world({ status: (url) => (url.includes("studio-gpu") ? other : "running") });
+test("every GPU session is a kernel of its own, the watch asks Kaggle about that one", async () => {
+  const asked = [];
+  const w = world({ status: (url) => { asked.push(url); return "running"; } });
+  await toParts(w, 1);
+  const first = w.last("gpu").kernel;
+  assert.match(first, /^u\/studio-gpu-[0-9a-f]{8}$/);
+  const key = `unit:${w.last("gpu").id}:gpu`;
+  await w.report(w.last("gpu"), "failed", { error: "boom" });
+  assert.notEqual(w.last("gpu").kernel, first, "the retry gets a new kernel name");
+  w.kv.set(key, JSON.stringify({ ...JSON.parse(w.kv.get(key)), at: Date.now() - 3600e3 }));
   await w.tick();
-  await w.report(w.last("research"), "done");
-  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 0, "the other run goes first");
-  const unit = JSON.parse(w.kv.get(`unit:${w.last("research").id}:gpu`));
-  assert.equal(unit.state, "waiting");
-  assert.match(unit.why, /another studio-gpu run is queued/);
-  other = "complete";
-  await w.tick();
-  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 1);
+  assert.ok(asked.some((u) => u.includes(w.last("gpu").kernel.split("/")[1])));
 });

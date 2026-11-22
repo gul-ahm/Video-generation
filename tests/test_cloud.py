@@ -651,6 +651,15 @@ class Reports(unittest.TestCase):
         self.assertEqual((post.body["nonce"], post.body["part"], post.body["event"]), ("n1", 2, "done"))
         fake.tell.assert_not_called()
 
+    def test_a_run_the_worker_replaced_stops_before_it_installs_anything(self):
+        k = kernel({"stage": "gpu", "nonce": "old", "id": "d1", "title": "Day 1", "slug": "day-1", "day": 1})
+        with mock.patch.object(k, "unpack"), mock.patch.object(k, "install") as install, \
+                mock.patch.object(k, "video") as video, \
+                mock.patch.object(k, "hook", return_value={"ok": True, "ignored": "not a run the worker is waiting for"}):
+            k.main()
+        install.assert_not_called()
+        video.assert_not_called()
+
     def test_one_gpu_session_makes_every_video_and_one_failing_does_not_stop_the_others(self):
         jobs = [{"id": f"d{k}", "title": f"Day {k}", "slug": f"day-{k}", "day": k, "minutes": 22} for k in (1, 2, 3)]
         k = kernel({"stage": "gpu", "nonce": "n1", **jobs[0], "jobs": jobs})

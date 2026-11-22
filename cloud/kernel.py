@@ -254,7 +254,7 @@ def hook(event, **extra):
             r = requests.post(f"{w['WORKER_URL']}/hook", json=body, headers={"X-Studio-Secret": w["HOOK_SECRET"]},
                               timeout=30)
             if r.ok:
-                return
+                return r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         except requests.RequestException:
             pass
     print(f"  the worker did not answer the {event} report", flush=True)
@@ -338,7 +338,8 @@ def main():
     try:
         unpack()
         sys.path.insert(0, str(HOME / "cloud"))
-        hook("stage")
+        if (hook("stage") or {}).get("ignored"):  # replaced while it waited in Kaggle's queue: another run does this
+            return print("the worker is not waiting for this run any more; stopping", flush=True)
         install(stage)
     except BaseException as err:
         for job in jobs:
@@ -349,8 +350,9 @@ def main():
         RUN.update(job)
         t1 = time.time()
         try:
-            if n:
-                hook("stage")
+            if n and (hook("stage") or {}).get("ignored"):
+                print(f"{RUN['title']}: the worker is not waiting for it any more", flush=True)
+                continue
             video(stage)
             print(f"{stage} of {RUN['title']} done in {(time.time() - t1) / 60:.0f} min", flush=True)
         except Exception as err:

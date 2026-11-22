@@ -124,7 +124,7 @@ function slugOf(title) {
 
 const kindOf = (key) => (key.startsWith("part") ? "part" : key);
 // the videos of a batch run side by side, so each has its own CPU kernels (slot 0, 1, 2...); the GPU kernel is one
-const kernelName = (r) => (r.stage === "gpu" ? "studio-gpu" : r.stage === "part" ? `studio-render-${r.slot || 0}-${r.part}`
+const kernelName = (r) => (r.stage === "gpu" ? r.kernel || "studio-gpu" : r.stage === "part" ? `studio-render-${r.slot || 0}-${r.part}`
   : `studio-${r.stage}-${r.slot || 0}`);
 const kernelOf = (job, key) => kernelName({ stage: kindOf(key), slot: job.run.slot, part: Number(key.slice(4)) });
 const unitKey = (job, key) => `unit:${job.id}:${key}`;
@@ -149,25 +149,25 @@ async function batchJobs(env, s) {
 }
 
 // one GPU session for these videos; a refused push (Kaggle runs too many at once) waits for the next tick
+// Each GPU session is a new kernel (studio-gpu-<nonce>). On 21 and 22 November every new version of studio-gpu
+// (and of studio-check, even after both were deleted and made again) waited hours in Kaggle's queue, while the same
+// push to a kernel name never used before started in seconds, three times out of three. A replaced run that does
+// start after all stops at its first report: the worker answers that it is not waiting for it.
 async function pushGpu(env, jobs) {
   const nonce = crypto.randomUUID().slice(0, 8);
-  const run = { ...jobs[0].run, stage: "gpu", nonce, jobs: jobs.map((j) => j.run) };
+  const kernel = `studio-gpu-${nonce}`;
+  const run = { ...jobs[0].run, stage: "gpu", nonce, kernel, jobs: jobs.map((j) => j.run) };
   let ok = null, code = null;
-  // a GPU run already queued or running on Kaggle is not ours (ours would be in a unit): pushing another does not
-  // replace it, both wait and both may run, writing to the same video. This one waits until that one has ended
-  const there = await kaggleStatus(env, "studio-gpu");
-  if (/queued|running/.test(there)) ok = `another studio-gpu run is ${there} on Kaggle; cancel it there if it is not wanted`;
-  else {
-    try {
-      code = await kagglePush(env, run);
-    } catch (err) {
-      ok = String(err).slice(0, 200);
-    }
+  try {
+    code = await kagglePush(env, run);
+    await env.KV.put("gpu_kernel", kernel);
+  } catch (err) {
+    ok = String(err).slice(0, 200);
   }
   for (const job of jobs) {
     const u = await get(env, unitKey(job, "gpu"), { tries: 0 });
     await put(env, unitKey(job, "gpu"), ok === null
-      ? { ...u, state: "pushed", nonce, at: Date.now(), waiting: null, started: null, code, batch: jobs.map((j) => j.id) }
+      ? { ...u, state: "pushed", nonce, kernel, at: Date.now(), waiting: null, started: null, code, batch: jobs.map((j) => j.id) }
       : { ...u, state: "waiting", nonce: null, waiting: u.waiting || Date.now(), why: ok });
   }
   return ok === null ? "pushed" : "waiting";
@@ -433,7 +433,7 @@ async function watch(env, s) {
         continue;
       }
       if (!["pushed", "running"].includes(u.state) || Date.now() - u.at < GRACE) continue;
-      const status = key === "gpu" ? (gpu ??= await kaggleStatus(env, "studio-gpu")) : await kaggleStatus(env, kernelOf(job, key));
+      const status = key === "gpu" ? (gpu ??= await kaggleStatus(env, u.kernel || "studio-gpu")) : await kaggleStatus(env, kernelOf(job, key));
       // Kaggle's time limit counts from the start, not from the push: a kernel two hours in the GPU queue had only
       // two of its four hours left before this counted it as lost and pushed it to the back of the queue again
       // the GPU session's videos wait their turn inside it: only Kaggle's own session limit ends that one
@@ -703,7 +703,7 @@ async function command(text, env) {
 // ---------- deploy check ----------
 
 async function check(env) {
-  const r = await fetch(`https://www.kaggle.com/api/v1/kernels/status?userName=${env.KAGGLE_USERNAME}&kernelSlug=studio-gpu`,
+  const r = await fetch(`https://www.kaggle.com/api/v1/kernels/status?userName=${env.KAGGLE_USERNAME}&kernelSlug=${(await env.KV.get("gpu_kernel")) || "studio-gpu"}`,
     { headers: { Authorization: "Basic " + btoa(`${env.KAGGLE_USERNAME}:${env.KAGGLE_KEY}`) } });
   const plan = await get(env, "plan", { days: [] });
   const s = await state(env);
