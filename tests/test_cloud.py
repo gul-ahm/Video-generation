@@ -392,6 +392,12 @@ class Checks(unittest.TestCase):
         gpu, _, _ = self.checked({f"s{k}.jpg": '{"later": ""}' for k in range(3)}, {}, cache=stale)
         self.assertEqual(gpu, ["s0.jpg", "s1.jpg", "s2.jpg"])
 
+    def test_the_plan_gate_draws_no_effect_even_on_a_machine_without_them(self):
+        import fx
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"PLAN_ONLY": "1", "STRICT": "1"}), \
+                mock.patch.object(fx, "ready", side_effect=SystemExit("effects are not set up")):
+            self.assertEqual(fx.frames("prism", {"text": "Day one"}, Path(d) / "t"), (Path(d) / "t").resolve())
+
     def test_a_film_that_would_be_held_is_stopped_before_any_chapter_is_rendered(self):
         import make
         d = Path(tempfile.mkdtemp())

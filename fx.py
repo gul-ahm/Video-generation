@@ -221,7 +221,7 @@ def page(kind, values):
 def frames(kind, values, out):
     """Transparent PNG frames (30 fps) of one effect into folder out, kept for later runs. Returns out or None."""
     out = Path(out).resolve()
-    if (out / "done").exists():
+    if (out / "done").exists() or os.getenv("PLAN_ONLY") == "1":  # the plan gate only needs to know it will be there
         return out
     if not ready():
         return None

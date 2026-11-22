@@ -222,7 +222,7 @@ def kinetic(e, folder, want=None):
         word = said if said.lower() in title.lower() and len(said) > 3 else max(words, key=len, default="")
         kind, values = "marker", {"text": title, "word": word}
     out = folder / "fx" / f"{kind}_{fx.key(kind, values)}"
-    got = out if PLAN_ONLY() else fx.frames(kind, values, out)
+    got = fx.frames(kind, values, out)
     return {**e, "kind": "hfo", "fx": kind, "card": f"hyperframes {kind}", "frames": str(got), "step": 1} if got else None
 
 

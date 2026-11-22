@@ -273,6 +273,11 @@ def report(err):
     sys.path.insert(0, str(HOME / "cloud"))
     if RUN["stage"] in ("gpu", "check") and (HOME / "cloud").exists():
         checks("put")
+    if RUN["stage"] == "gpu" and folder().exists():  # the pictures drawn again so far go too: the next run starts there
+        try:
+            state("put")
+        except Exception as lost:
+            print(f"  the folder did not go to Drive ({str(lost)[:80]})", flush=True)
     try:
         kind = "quality" if isinstance(err, Quality) else "busy" if isinstance(err, Busy) else "error"
         wait = re.search(r"service busy: wait=(\d+)", str(err)) if kind == "busy" else None
