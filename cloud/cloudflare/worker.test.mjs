@@ -5,7 +5,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import worker from "./worker.js";
 
-function world({ refuse = () => false, status = () => "running", perDay = 1 } = {}) {
+// Kaggle's status of a kernel: the GPU kernel ended (nothing of ours or anyone's is there), the others running
+function world({ refuse = () => false, status = (url) => (url.includes("studio-gpu") ? "complete" : "running"), perDay = 1 } = {}) {
   const kv = new Map(), told = [], pushes = [];
   const KV = {
     get: async (k) => kv.get(k) ?? null, put: async (k, v) => kv.set(k, v), delete: async (k) => kv.delete(k),
@@ -109,7 +110,7 @@ test("two chapters finishing at the same moment still lead to one join", async (
 });
 
 test("a kernel that ended without a word is noticed by the watch and run again", async () => {
-  const w = world({ status: (url) => (url.includes("studio-render-0-1") ? "error" : "running") });
+  const w = world({ status: (url) => (url.includes("studio-render-0-1") ? "error" : url.includes("studio-gpu") ? "complete" : "running") });
   await toParts(w, 2);
   const unit = JSON.parse(w.kv.get(`unit:${w.last("part", 1).id}:part1`));
   w.kv.set(`unit:${w.last("part", 1).id}:part1`, JSON.stringify({ ...unit, at: Date.now() - 3600e3 }));
@@ -181,7 +182,7 @@ test("a stage out of the vision API's free calls waits until they come back", as
 });
 
 test("a kernel waiting in Kaggle's queue for hours is not counted as lost", async () => {
-  const w = world({ status: () => "queued" });
+  const w = world({ status: (url) => (url.includes("studio-gpu") ? "complete" : "queued") });
   await toParts(w, 1);
   const key = `unit:${w.last("part", 0).id}:part0`;
   w.kv.set(key, JSON.stringify({ ...JSON.parse(w.kv.get(key)), at: Date.now() - 6 * 3600e3 }));
@@ -253,7 +254,7 @@ test("two researches ending at the same moment still lead to one GPU session", a
 
 test("a GPU session that ends without a word sends its unfinished videos into one new session", async () => {
   let dead = false;
-  const w = world({ perDay: 3, status: (url) => (dead && url.includes("studio-gpu") ? "error" : "running") });
+  const w = world({ perDay: 3, status: (url) => (url.includes("studio-gpu") && dead ? "error" : url.includes("studio-gpu") ? "complete" : "running") });
   const [a, b, c] = await batchToGpu(w);
   await gpuReport(w, a, "done", { chapters: 1 });
   dead = true;
@@ -318,4 +319,18 @@ test("a smoke film does not take the place of a test film that is still running"
   const out = await w.call("/start", { day: 0, title: "Smoke test", subject: "x", minutes: 1, smoke: true });
   assert.match(out.message, /still running/);
   assert.equal(w.pushes.filter((r) => r.stage === "research").length, 1);
+});
+
+test("no GPU run is pushed while another studio-gpu run is still queued on Kaggle", async () => {
+  let other = "queued";
+  const w = world({ status: (url) => (url.includes("studio-gpu") ? other : "running") });
+  await w.tick();
+  await w.report(w.last("research"), "done");
+  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 0, "the other run goes first");
+  const unit = JSON.parse(w.kv.get(`unit:${w.last("research").id}:gpu`));
+  assert.equal(unit.state, "waiting");
+  assert.match(unit.why, /another studio-gpu run is queued/);
+  other = "complete";
+  await w.tick();
+  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 1);
 });

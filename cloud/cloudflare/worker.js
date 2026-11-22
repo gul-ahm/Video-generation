@@ -153,10 +153,16 @@ async function pushGpu(env, jobs) {
   const nonce = crypto.randomUUID().slice(0, 8);
   const run = { ...jobs[0].run, stage: "gpu", nonce, jobs: jobs.map((j) => j.run) };
   let ok = null, code = null;
-  try {
-    code = await kagglePush(env, run);
-  } catch (err) {
-    ok = String(err).slice(0, 200);
+  // a GPU run already queued or running on Kaggle is not ours (ours would be in a unit): pushing another does not
+  // replace it, both wait and both may run, writing to the same video. This one waits until that one has ended
+  const there = await kaggleStatus(env, "studio-gpu");
+  if (/queued|running/.test(there)) ok = `another studio-gpu run is ${there} on Kaggle; cancel it there if it is not wanted`;
+  else {
+    try {
+      code = await kagglePush(env, run);
+    } catch (err) {
+      ok = String(err).slice(0, 200);
+    }
   }
   for (const job of jobs) {
     const u = await get(env, unitKey(job, "gpu"), { tries: 0 });

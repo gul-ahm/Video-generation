@@ -172,7 +172,8 @@ class Deploy(unittest.TestCase):
             return types.SimpleNamespace(json=lambda: {"sha": "abc1234567"}, content=tgz, raise_for_status=lambda: None)
         ran = types.SimpleNamespace(returncode=0 if tests_pass else 1, stderr="Ran 3 tests\n\nOK" if tests_pass else "FAILED")
         with mock.patch.object(cloud, "ROOT", root), mock.patch("requests.get", get), \
-                mock.patch.object(cloud.subprocess, "run", return_value=ran), mock.patch.object(cloud, "sync") as synced:
+                mock.patch.object(cloud.subprocess, "run", return_value=ran), mock.patch.object(cloud, "sync") as synced, \
+                mock.patch.object(cloud, "busy", return_value=[]):
             cloud.deploy("main")
         return synced
 
@@ -187,6 +188,19 @@ class Deploy(unittest.TestCase):
         synced.assert_called_once()
         with tarfile.open(next((root / "_ref").glob("before_*.tgz"))) as b:
             self.assertEqual(b.extractfile("make.py").read(), b"old")
+
+    def test_no_sync_while_a_film_runs_on_the_code_dataset(self):
+        import cloud
+        root = Path(tempfile.mkdtemp())
+        tgz = self.commit({"make.py": "new"})
+        get = lambda url, timeout: types.SimpleNamespace(json=lambda: {"sha": "abc1234567"}, content=tgz,
+                                                         raise_for_status=lambda: None)
+        ran = types.SimpleNamespace(returncode=0, stderr="OK")
+        with mock.patch.object(cloud, "ROOT", root), mock.patch("requests.get", get), \
+                mock.patch.object(cloud.subprocess, "run", return_value=ran), mock.patch.object(cloud, "sync") as synced, \
+                mock.patch.object(cloud, "busy", return_value=["Day 5"]):
+            cloud.deploy("main")
+        synced.assert_not_called()
 
     def test_failed_tests_put_the_old_files_back(self):
         root = Path(tempfile.mkdtemp())

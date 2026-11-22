@@ -138,7 +138,10 @@ def deploy(ref="main", upload=True):
                 (ROOT / k).unlink()
         raise SystemExit(f"deploy: the tests failed, the files from before are back\n{tests.stderr[-1500:]}")
     (ROOT / "DEPLOYED").write_text(f"{sha}\n")
-    if upload:
+    running = busy() if upload else []
+    if running:  # their kernels check the code dataset when they start: cloud.py smoke syncs once they are done
+        print(f"  sync left for later ({', '.join(running)} running); cloud.py smoke syncs first", flush=True)
+    elif upload:
         sync()
     if "cloud/cloudflare/worker.js" in changed:
         import worker
@@ -173,18 +176,37 @@ def sync():
         worker.kv_files(version=version)
 
 
+def busy():
+    """The videos the worker is making now, by title ([] when none): the code a running film checks must not change
+    under it, so a sync or a promote waits for them."""
+    import worker
+    cf = worker.Cloudflare()
+    space = cf.kv()
+    s = json.loads(cf.get(space, "state") or "{}")
+    ids = (s.get("batch") or {}).get("ids") or ([s["running"]["id"]] if s.get("running") else [])
+    jobs = [json.loads(cf.get(space, f"job:{i}") or "{}") for i in ids]
+    return [j.get("title", "?") for j in jobs if j.get("status") == "running"]
+
+
+def wait_idle(what, hours=6):
+    for _ in range(hours * 6):
+        if not busy():
+            return
+        print(f"  {what} waits: {', '.join(busy())} still running", flush=True)
+        time.sleep(600)
+    raise SystemExit(f"{what}: videos kept running for {hours} hours")
+
+
 def smoke():
     """A one minute film through every stage on the code just synced; when the join delivers it, that code becomes
     the code of the daily videos (promote). A change reaches them only after a whole film went through: before,
     each new piece was first tried on a real day's video and a bug was found two hours in."""
     import worker
     title, subject = SMOKE
-    for _ in range(36):  # a film still running goes first (six hours at most)
-        if "still running" not in ask("/start", {"day": 0, "title": title, "subject": subject, "minutes": 1, "smoke": True}):
-            break
-        time.sleep(600)
-    else:
-        raise SystemExit("the smoke film could not start: other videos ran for six hours")
+    wait_idle("the smoke film")
+    sync()  # the code to test, uploaded only now that no running film checks the code dataset
+    if "still running" in ask("/start", {"day": 0, "title": title, "subject": subject, "minutes": 1, "smoke": True}):
+        raise SystemExit("a video started in the meantime; run the smoke film again later")
     cf, key = worker.Cloudflare(), f"job:{push.job(title)['id']}"
     space = cf.kv()
     for _ in range(180):  # three hours at most; a smoke film takes about forty minutes
@@ -205,6 +227,7 @@ def promote():
     space, version = cf.kv(), stamp()
     if cf.get(space, "smoke_passed") != version:
         raise SystemExit(f"the code here ({version}) is not the code the last smoke film passed; run: python cloud.py smoke")
+    wait_idle("the promote")  # a daily video running now checks history-studio-code-good
     with tempfile.TemporaryDirectory() as d:
         Path(d, "VERSION").write_text(version)
         pack(CODE, f"{d}/code.tgz", [(Path(d, "VERSION"), "VERSION")])
