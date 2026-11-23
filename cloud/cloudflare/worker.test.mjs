@@ -7,17 +7,23 @@ import worker from "./worker.js";
 
 // Kaggle's status of a kernel: the GPU kernel ended (nothing of ours or anyone's is there), the others running
 function world({ refuse = () => false, status = (url) => (url.includes("studio-gpu") ? "complete" : "running"), perDay = 1 } = {}) {
-  const kv = new Map(), told = [], pushes = [];
+  const kv = new Map(), told = [], pushes = [], deleted = [];
   const KV = {
     get: async (k) => kv.get(k) ?? null, put: async (k, v) => kv.set(k, v), delete: async (k) => kv.delete(k),
     list: async ({ prefix }) => ({ keys: [...kv.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })) }),
   };
   globalThis.fetch = async (url, o = {}) => {
     const body = o.body ? JSON.parse(o.body) : null;
-    if (String(url).includes("kernels/push")) {
-      const run = JSON.parse(body.text.match(/RUN = (.*)/)[1]);
+    if (String(url).includes("DeleteKernel")) {
+      deleted.push(body.kernelSlug);
+      return new Response("{}");
+    }
+    if (String(url).includes("kernels/push") || String(url).includes("SaveKernel")) {
+      const text = body.kernelType === "notebook" ? JSON.parse(body.text).cells[0].source : body.text;
+      const run = JSON.parse(text.match(/RUN = (.*)/)[1]);
       if (refuse(run)) return new Response(JSON.stringify({ error: "Maximum batch CPU session count reached" }));
       pushes.push({ ...run, kernel: body.slug, limit: body.sessionTimeoutSeconds, shape: body.machineShape, gpuOn: body.enableGpu,
+                    type: body.kernelType, how: body.kernelExecutionType, api: String(url).includes("api.kaggle.com"),
                     dataset: body.datasetDataSources[0].split("/")[1] });
       return new Response(JSON.stringify({ ref: body.slug }));
     }
@@ -34,7 +40,7 @@ function world({ refuse = () => false, status = (url) => (url.includes("studio-g
   const last = (stage, part) => pushes.filter((r) => r.stage === stage && (part === undefined || r.part === part)).at(-1);
   const report = (run, event, extra = {}) => call("/hook", { event, id: run.id, stage: run.stage, part: run.part, nonce: run.nonce, ...extra });
   const state = () => JSON.parse(kv.get("state"));
-  return { kv, told, pushes, env, call, last, report, state, tick: () => call("/tick") };
+  return { kv, told, pushes, deleted, env, call, last, report, state, tick: () => call("/tick") };
 }
 
 async function toParts(w, chapters = 3) {
@@ -333,4 +339,36 @@ test("every GPU session is a kernel of its own, the watch asks Kaggle about that
   w.kv.set(key, JSON.stringify({ ...JSON.parse(w.kv.get(key)), at: Date.now() - 3600e3 }));
   await w.tick();
   assert.ok(asked.some((u) => u.includes(w.last("gpu").kernel.split("/")[1])));
+});
+
+test("a GPU session goes as a notebook saved with Save & Run All, the other stages as scripts", async () => {
+  const w = world({ status: () => "running" });
+  await toParts(w, 1);
+  const g = w.last("gpu"), r = w.last("research"), p = w.last("part", 0);
+  assert.deepEqual([g.type, g.how, g.api], ["notebook", "SAVE_AND_RUN_ALL", true]);
+  assert.deepEqual([r.type, r.how, r.api, p.type], ["script", undefined, false, "script"]);
+});
+
+test("a GPU session left in Kaggle's queue is sent again under a new name, three times at most", async () => {
+  const w = world({ perDay: 2, status: (url) => (url.includes("studio-gpu") ? "queued" : "running") });
+  await w.tick();
+  for (const r of w.pushes.filter((x) => x.stage === "research")) await w.report(r, "done");
+  const first = w.last("gpu").kernel.split("/")[1];
+  const ids = [...new Set(w.pushes.filter((x) => x.stage === "research").map((x) => x.id))];
+  const age = (mins) => { for (const id of ids) { const k = `unit:${id}:gpu`; w.kv.set(k, JSON.stringify({ ...JSON.parse(w.kv.get(k)), at: Date.now() - mins * 60e3 })); } };
+  age(10);
+  await w.tick();
+  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 1, "not before half an hour");
+  age(31);
+  await w.tick();
+  const gpu = w.pushes.filter((r) => r.stage === "gpu");
+  assert.equal(gpu.length, 2, "one new session for both videos");
+  assert.deepEqual(w.deleted, [first]);
+  assert.notEqual(gpu[1].kernel.split("/")[1], first);
+  assert.equal(gpu[1].jobs.length, 2);
+  for (const id of ids) assert.equal(JSON.parse(w.kv.get(`unit:${id}:gpu`)).kernel, gpu[1].kernel.split("/")[1]);
+  assert.match(w.told.at(-1), /sat \d+ min in Kaggle's queue. Sent again as studio-gpu-\w+ \(1 of 3\)/);
+  for (let i = 0; i < 4; i++) { age(31); await w.tick(); }
+  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 4, "three times, then it waits for Kaggle");
+  assert.equal(JSON.parse(w.kv.get(`unit:${ids[0]}:gpu`)).state, "pushed", "not failed");
 });

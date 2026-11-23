@@ -153,7 +153,7 @@ async function batchJobs(env, s) {
 // (and of studio-check, even after both were deleted and made again) waited hours in Kaggle's queue, while the same
 // push to a kernel name never used before started in seconds, three times out of three. A replaced run that does
 // start after all stops at its first report: the worker answers that it is not waiting for it.
-async function pushGpu(env, jobs) {
+async function pushGpu(env, jobs, requeues = 0) {
   const nonce = crypto.randomUUID().slice(0, 8);
   const kernel = `studio-gpu-${nonce}`;
   const run = { ...jobs[0].run, stage: "gpu", nonce, kernel, jobs: jobs.map((j) => j.run) };
@@ -167,7 +167,8 @@ async function pushGpu(env, jobs) {
   for (const job of jobs) {
     const u = await get(env, unitKey(job, "gpu"), { tries: 0 });
     await put(env, unitKey(job, "gpu"), ok === null
-      ? { ...u, state: "pushed", nonce, kernel, at: Date.now(), waiting: null, started: null, code, batch: jobs.map((j) => j.id) }
+      ? { ...u, state: "pushed", nonce, kernel, at: Date.now(), waiting: null, started: null, code, why: null, requeues,
+        batch: jobs.map((j) => j.id) }
       : { ...u, state: "waiting", nonce: null, waiting: u.waiting || Date.now(), why: ok });
   }
   return ok === null ? "pushed" : "waiting";
@@ -407,10 +408,25 @@ async function kaggleStatus(env, kernel) {
   return String((await r.json().catch(() => ({}))).status || r.status).toLowerCase();
 }
 
+// A GPU session Kaggle keeps in its queue: the same kernel saved from the browser starts at once, so after
+// QUEUED minutes it is deleted and the session goes again under a new name, at most REQUEUES times; after that it
+// waits for Kaggle like before. Nothing is lost: what the videos made so far is on Drive.
+const QUEUED = 30, REQUEUES = 3;
+
+async function requeueGpu(env, s, u) {
+  const jobs = [];
+  for (const job of await batchJobs(env, s)) if ((await get(env, unitKey(job, "gpu"), null))?.kernel === u.kernel) jobs.push(job);
+  await kaggleApi(env, "DeleteKernel", { userName: env.KAGGLE_USERNAME, kernelSlug: u.kernel }).catch(() => null);
+  await pushGpu(env, jobs, (u.requeues || 0) + 1);
+  const now = await get(env, unitKey(jobs[0], "gpu"), {});
+  await say(env, `GPU session ${u.kernel} sat ${Math.round((Date.now() - u.at) / 60e3)} min in Kaggle's queue. ` +
+    (now.state === "pushed" ? `Sent again as ${now.kernel} (${now.requeues} of ${REQUEUES}).` : `Sending it again failed: ${now.why}`));
+}
+
 // the day's videos: kernels that ended without a word, units waiting for a machine or a service
 async function watch(env, s) {
   const jobs = await batchJobs(env, s);
-  let gpu = null;  // one GPU kernel for the batch: asked once
+  let gpu = null, requeued = false;  // one GPU kernel for the batch: asked once
   for (const job of jobs) {
     const all = await units(env, job);
     if (!Object.keys(all).length && Date.now() - s.batch.since > 3600e3) {
@@ -437,6 +453,13 @@ async function watch(env, s) {
       // Kaggle's time limit counts from the start, not from the push: a kernel two hours in the GPU queue had only
       // two of its four hours left before this counted it as lost and pushed it to the back of the queue again
       // the GPU session's videos wait their turn inside it: only Kaggle's own session limit ends that one
+      if (key === "gpu" && status === "queued" && u.state === "pushed") {
+        if (!requeued && (u.requeues || 0) < REQUEUES && Date.now() - u.at > QUEUED * 60e3) {
+          requeued = true;
+          await requeueGpu(env, s, u);
+        }
+        continue;
+      }
       const since = u.started || (status === "queued" ? Date.now() : u.at);
       const late = key !== "gpu" && Date.now() - since > (LIMIT[kindOf(key)] + 1) * 3600e3;
       if (/error|cancel|complete/.test(status) || late) {
@@ -505,6 +528,12 @@ async function kagglePush(env, run) {
     // six seconds on the same two T4s
     ...(gpu ? {} : { sessionTimeoutSeconds: LIMIT[run.stage] * 3600 }),
   };
+  if (gpu) {  // saved the way the browser's "Save Version, Save & Run All" saves a notebook
+    Object.assign(body, { kernelType: "notebook", text: notebook(body.text), kernelExecutionType: "SAVE_AND_RUN_ALL" });
+    const out = await kaggleApi(env, "SaveKernel", body);
+    if (out.error) throw new Error(`Kaggle push: ${out.error}`);
+    return run.code;
+  }
   const auth = "Basic " + btoa(`${me}:${env.KAGGLE_KEY}`);
   const r = await fetch("https://www.kaggle.com/api/v1/kernels/push", {
     method: "POST", headers: { Authorization: auth, "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -512,6 +541,22 @@ async function kagglePush(env, run) {
   const out = await r.json().catch(() => ({}));
   if (!r.ok || out.error) throw new Error(`Kaggle push: ${r.status} ${out.error || out.message || ""}`.trim());
   return run.code;
+}
+
+const notebook = (code) => JSON.stringify({
+  nbformat: 4, nbformat_minor: 4, cells: [{ cell_type: "code", execution_count: null, metadata: {}, outputs: [], source: code }],
+  metadata: { kernelspec: { name: "python3", display_name: "Python 3", language: "python" }, language_info: { name: "python" } },
+});
+
+// Kaggle's own API, the one its CLI uses (api.kaggle.com); it answers 404 to a request with a python-requests agent
+async function kaggleApi(env, method, body) {
+  const r = await fetch(`https://api.kaggle.com/v1/kernels.KernelsApiService/${method}`, {
+    method: "POST", body: JSON.stringify(body),
+    headers: { Authorization: "Basic " + btoa(`${env.KAGGLE_USERNAME}:${env.KAGGLE_KEY}`), "Content-Type": "application/json" },
+  });
+  const out = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`Kaggle ${method}: ${r.status} ${out.message || out.error || ""}`.trim());
+  return out;
 }
 
 // ---------- publish slots ----------
