@@ -215,6 +215,12 @@ session is a kernel of its own, `studio-gpu-<code>`, saved as a notebook with "S
 API (api.kaggle.com), the way the browser saves one. A session still in the queue after 30 minutes is deleted and
 sent again under a new name, three times at most, then it waits for Kaggle.
 
+Even so, work sent through the API can wait for hours in Kaggle's batch queue while a notebook saved in the browser
+starts at once. So the day's GPU work can also be taken by the notebook `studio-gpu-daily` (`cloud/daily_gpu.py`,
+put up with `python cloud.py daily`), which Kaggle runs on the schedule set in its editor: it asks the worker
+(`/claim`) which daily videos wait for the GPU, takes them from the queued API session (deleted), and runs the same
+kernel.py stage. Every queue message on Telegram carries its link: Save Version, Save & Run All starts it by hand.
+
 1. **research** (CPU): web research, claims ledger, verified screenshots, script.
 2. **gpu** (2 x T4): the edit plan, the voice (Chatterbox on CUDA instead of MLX) and the pictures, drawn on the same
    machine instead of a second kernel. Only this stage uses GPU hours.

@@ -58,6 +58,7 @@ export default {
         const b = await req.json();
         return Response.json({ message: await startJob(env, b.day, b.from, b) });
       }
+      if (url.pathname === "/claim" && req.method === "POST") return Response.json(await claim(env, (await req.json()).version));
       if (url.pathname === "/tick") return Response.json({ ok: await tick(env).then(() => true) });
       if (url.pathname === "/check") return Response.json(await check(env));
       return new Response("History Studio", { status: 404 });
@@ -412,6 +413,46 @@ async function kaggleStatus(env, kernel) {
 // QUEUED minutes it is deleted and the session goes again under a new name, at most REQUEUES times; after that it
 // waits for Kaggle like before. Nothing is lost: what the videos made so far is on Drive.
 const QUEUED = 30, REQUEUES = 3;
+const DAILY = "studio-gpu-daily";  // the notebook Kaggle starts on its own schedule: cloud/daily_gpu.py
+const dailyLink = (env) => `https://www.kaggle.com/code/${env.KAGGLE_USERNAME}/${DAILY}/edit`;
+
+// the daily notebook has started: it takes every daily video that waits for the GPU, from the queued API session too
+// (deleted, so it cannot start later and use the hours again). Test and smoke films run the newest code, which the
+// notebook does not mount, so they stay with the API.
+async function claim(env, version) {
+  const s = await state(env);
+  const jobs = [], live = new Set(), todo = [];
+  for (const job of await batchJobs(env, s)) jobs.push([job, await units(env, job)]);
+  // a session that has begun one of its videos makes the others in turn: those are not waiting
+  for (const [, all] of jobs) if (all.gpu?.started && all.gpu.nonce) live.add(all.gpu.nonce);
+  for (const [job, all] of jobs) {
+    const g = all.gpu;
+    if (!job.day || all.research?.state !== "done" || !g || (g.state === "pushed" && live.has(g.nonce))) continue;
+    if (["pushed", "waiting"].includes(g.state) || (g.state === "later" && Date.now() >= g.after)) todo.push([job, g]);
+  }
+  if (!todo.length) return { message: "No video waits for the GPU now." };
+  const good = await env.KV.get("good_version");
+  if (good && version !== good) {
+    const why = `The notebook ${DAILY} mounts code ${version}, the daily videos run ${good}: update its input ` +
+      `history-studio-code-good to the newest version (${dailyLink(env)}).`;
+    await say(env, why);
+    return { message: why };
+  }
+  for (const k of new Set(todo.map(([, g]) => g.kernel).filter((k) => k && k !== DAILY))) {
+    await kaggleApi(env, "DeleteKernel", { userName: env.KAGGLE_USERNAME, kernelSlug: k }).catch(() => null);
+  }
+  const nonce = crypto.randomUUID().slice(0, 8);
+  const code = good || version;
+  const run = { ...todo[0][0].run, stage: "gpu", nonce, kernel: DAILY, code, jobs: todo.map(([j]) => j.run) };
+  for (const [job, g] of todo) {
+    await put(env, unitKey(job, "gpu"), { ...g, state: "pushed", nonce, kernel: DAILY, at: Date.now(), waiting: null,
+      started: null, code, why: null, batch: todo.map(([j]) => j.id) });
+  }
+  await env.KV.put("gpu_kernel", DAILY);
+  const message = `GPU session started by the notebook ${DAILY} for ${todo.map(([j]) => `day ${j.day}`).join(", ")}.`;
+  await say(env, message);
+  return { message, code: (await env.KV.get("kernel")).replace("__RUN__", JSON.stringify(run)) };
+}
 
 async function requeueGpu(env, s, u) {
   const jobs = [];
@@ -420,13 +461,15 @@ async function requeueGpu(env, s, u) {
   await pushGpu(env, jobs, (u.requeues || 0) + 1);
   const now = await get(env, unitKey(jobs[0], "gpu"), {});
   await say(env, `GPU session ${u.kernel} sat ${Math.round((Date.now() - u.at) / 60e3)} min in Kaggle's queue. ` +
-    (now.state === "pushed" ? `Sent again as ${now.kernel} (${now.requeues} of ${REQUEUES}).` : `Sending it again failed: ${now.why}`));
+    (now.state === "pushed" ? `Sent again as ${now.kernel} (${now.requeues} of ${REQUEUES}).` : `Sending it again failed: ${now.why}`) +
+    `\nTo start it at once: open ${dailyLink(env)} and click Save Version, Save & Run All.`);
 }
 
 // the day's videos: kernels that ended without a word, units waiting for a machine or a service
 async function watch(env, s) {
   const jobs = await batchJobs(env, s);
-  let gpu = null, requeued = false;  // one GPU kernel for the batch: asked once
+  const gpu = {};  // each GPU kernel asked once
+  let requeued = false;
   for (const job of jobs) {
     const all = await units(env, job);
     if (!Object.keys(all).length && Date.now() - s.batch.since > 3600e3) {
@@ -449,12 +492,12 @@ async function watch(env, s) {
         continue;
       }
       if (!["pushed", "running"].includes(u.state) || Date.now() - u.at < GRACE) continue;
-      const status = key === "gpu" ? (gpu ??= await kaggleStatus(env, u.kernel || "studio-gpu")) : await kaggleStatus(env, kernelOf(job, key));
+      const status = key === "gpu" ? (gpu[u.kernel] ??= await kaggleStatus(env, u.kernel || "studio-gpu")) : await kaggleStatus(env, kernelOf(job, key));
       // Kaggle's time limit counts from the start, not from the push: a kernel two hours in the GPU queue had only
       // two of its four hours left before this counted it as lost and pushed it to the back of the queue again
       // the GPU session's videos wait their turn inside it: only Kaggle's own session limit ends that one
       if (key === "gpu" && status === "queued" && u.state === "pushed") {
-        if (!requeued && (u.requeues || 0) < REQUEUES && Date.now() - u.at > QUEUED * 60e3) {
+        if (!requeued && u.kernel !== DAILY && (u.requeues || 0) < REQUEUES && Date.now() - u.at > QUEUED * 60e3) {
           requeued = true;
           await requeueGpu(env, s, u);
         }

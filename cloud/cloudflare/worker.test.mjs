@@ -372,3 +372,67 @@ test("a GPU session left in Kaggle's queue is sent again under a new name, three
   assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 4, "three times, then it waits for Kaggle");
   assert.equal(JSON.parse(w.kv.get(`unit:${ids[0]}:gpu`)).state, "pushed", "not failed");
 });
+
+// ---------- the daily notebook Kaggle starts itself ----------
+
+async function twoWaiting(w) {
+  await w.tick();
+  for (const r of w.pushes.filter((x) => x.stage === "research")) await w.report(r, "done");
+  return [...new Set(w.pushes.filter((x) => x.stage === "research").map((x) => x.id))];
+}
+
+test("the daily notebook takes the videos the queued API session holds, and only it is listened to", async () => {
+  const w = world({ perDay: 2, status: (url) => (url.includes("studio-gpu") ? "queued" : "running") });
+  w.kv.set("good_version", "g1");
+  const ids = await twoWaiting(w);
+  const api = w.last("gpu");
+  const got = await w.call("/claim", { version: "g1" });
+  assert.match(got.message, /started by the notebook studio-gpu-daily for day 1, day 2/);
+  const run = JSON.parse(got.code.match(/RUN = (.*)/)[1]);
+  assert.deepEqual([run.kernel, run.code, run.jobs.length], ["studio-gpu-daily", "g1", 2]);
+  assert.deepEqual(w.deleted, [api.kernel.split("/")[1]], "the API session is deleted");
+  assert.equal(w.kv.get("gpu_kernel"), "studio-gpu-daily");
+  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 1, "nothing pushed");
+  assert.match(JSON.stringify(await w.report(api, "stage")), /ignored/, "the old session stops itself if it starts");
+  const job = { ...run, ...run.jobs[0] };
+  await w.report(job, "stage");
+  assert.equal(JSON.parse(w.kv.get(`unit:${ids[0]}:gpu`)).state, "running");
+  await w.report(job, "done", { chapters: 2 });
+  assert.equal(w.pushes.filter((r) => r.stage === "part").length, 2, "the chapters follow as always");
+  assert.match((await w.call("/claim", { version: "g1" })).message, /No video waits/, "day 2 is in the running session");
+});
+
+test("the daily notebook with old code does nothing and says how to fix it", async () => {
+  const w = world({ perDay: 2, status: () => "queued" });
+  w.kv.set("good_version", "g2");
+  await twoWaiting(w);
+  const got = await w.call("/claim", { version: "g1" });
+  assert.equal(got.code, undefined);
+  assert.match(w.told.at(-1), /mounts code g1, the daily videos run g2/);
+  assert.deepEqual(w.deleted, []);
+});
+
+test("nothing to claim: no batch, research not done, or a test film", async () => {
+  const w = world({ status: () => "queued" });
+  assert.match((await w.call("/claim", { version: "x" })).message, /No video waits/);
+  await w.tick();
+  assert.match((await w.call("/claim", { version: "x" })).message, /No video waits/, "research still running");
+  const t = world({ status: () => "queued" });
+  await t.call("/start", { day: 0, title: "A test", subject: "x", minutes: 8 });
+  await t.report(t.last("research"), "done");
+  assert.match((await t.call("/claim", { version: "x" })).message, /No video waits/, "a test film stays with the API");
+});
+
+test("the queue message carries the daily notebook's link, and the daily notebook itself is never requeued", async () => {
+  const w = world({ perDay: 2, status: (url) => (url.includes("studio-gpu") ? "queued" : "running") });
+  const ids = await twoWaiting(w);
+  for (const id of ids) { const k = `unit:${id}:gpu`; w.kv.set(k, JSON.stringify({ ...JSON.parse(w.kv.get(k)), at: Date.now() - 31 * 60e3 })); }
+  await w.tick();
+  assert.match(w.told.at(-1), /kaggle.com\/code\/u\/studio-gpu-daily\/edit/);
+  await w.call("/claim", { version: "x" });
+  for (const id of ids) { const k = `unit:${id}:gpu`; w.kv.set(k, JSON.stringify({ ...JSON.parse(w.kv.get(k)), at: Date.now() - 31 * 60e3 })); }
+  const deleted = w.deleted.length;
+  await w.tick();
+  assert.equal(w.deleted.length, deleted);
+  assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 2);
+});

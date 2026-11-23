@@ -13,6 +13,8 @@
   python cloud.py check 10                     only the picture check, on the test film's first 10 pictures (minutes)
   python cloud.py send output/<folder>         put a folder made on the Mac on Drive, so a later stage can continue it
   python cloud.py worker                       put the Cloudflare worker up (daily start, Telegram Yes and No)
+  python cloud.py daily                        put up the notebook studio-gpu-daily (cloud/daily_gpu.py), the day's
+                                               GPU session that Kaggle starts itself; set its schedule in the browser
 
 Run sync again after changing the code, the voice, the music or a key.
 """
@@ -247,6 +249,28 @@ def send(folder):
         print("  on Drive:", drive.upload(tgz)[1])
 
 
+def daily():
+    """The notebook studio-gpu-daily, pushed once; Kaggle then runs it on the schedule set in its editor. Pushing runs
+    it now too: with no video waiting it only says so and ends."""
+    user = json.loads((ROOT / "secrets" / "kaggle.json").read_text())["username"]
+    with tempfile.TemporaryDirectory() as d:
+        cell = {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [],
+                "source": (ROOT / "cloud" / "daily_gpu.py").read_text()}
+        Path(d, "daily.ipynb").write_text(json.dumps({"nbformat": 4, "nbformat_minor": 4, "cells": [cell], "metadata": {
+            "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"}}}))
+        Path(d, "kernel-metadata.json").write_text(json.dumps({
+            "id": f"{user}/studio-gpu-daily", "title": "studio-gpu-daily", "code_file": "daily.ipynb",
+            "language": "python", "kernel_type": "notebook", "is_private": True, "enable_gpu": True,
+            "enable_tpu": False, "enable_internet": True,
+            "dataset_sources": [f"{user}/history-studio-{x}" for x in ("code-good", "assets", "secrets")]}))
+        out = subprocess.run([str(Path(sys.executable).parent / "kaggle"), "kernels", "push", "-p", d],
+                             capture_output=True, text=True)
+    print(" ", (out.stdout + out.stderr).strip()[-400:], flush=True)
+    if out.returncode:
+        raise SystemExit("daily: the push failed")
+    print(f"  now open https://www.kaggle.com/code/{user}/studio-gpu-daily/edit and set its schedule (daily)", flush=True)
+
+
 def check(n):
     """The picture check alone on the test film's first n pictures, already on Drive, on a Kaggle GPU: nothing is
     drawn and no film is made, so a change to the check is tried in minutes before a whole video depends on it."""
@@ -318,6 +342,8 @@ if __name__ == "__main__":
         check(int(args[1]) if len(args) == 2 else 10)
     elif args[:1] == ["tick"]:
         ask("/tick")
+    elif args == ["daily"]:
+        daily()
     elif args[:1] == ["worker"]:
         import worker
         worker.deploy()
