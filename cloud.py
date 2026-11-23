@@ -252,7 +252,7 @@ def send(folder):
 def daily():
     """The notebook studio-gpu-daily, pushed once; Kaggle then runs it on the schedule set in its editor. Pushing runs
     it now too: with no video waiting it only says so and ends."""
-    user = json.loads((ROOT / "secrets" / "kaggle.json").read_text())["username"]
+    user = push.user()
     with tempfile.TemporaryDirectory() as d:
         cell = {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [],
                 "source": (ROOT / "cloud" / "daily_gpu.py").read_text()}
