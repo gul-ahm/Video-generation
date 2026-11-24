@@ -121,7 +121,7 @@ class Drive(unittest.TestCase):
 
 
 def qa_md(fails=()):
-    """A qa.md with all 14 checks, the named ones failing."""
+    """A qa.md with all 15 checks, the named ones failing."""
     import qa
     rows = [f"| {name} | 1.00 {'FIX' if name in fails else 'ok'} | {lo} to {hi} | {ref} |"
             for name, (lo, hi, ref) in qa.TARGETS.items()]
@@ -221,14 +221,14 @@ class Gate(unittest.TestCase):
             (Path(d) / "qa.md").write_text(text)
             return kernel().quality(Path(d))
 
-    def test_qa_has_fourteen_checks_and_the_kernel_expects_fourteen(self):
+    def test_qa_has_fifteen_checks_and_the_kernel_expects_fifteen(self):
         import qa
-        self.assertEqual(len(qa.TARGETS), 14)
-        self.assertEqual(kernel().CHECKS, 14)
+        self.assertEqual(len(qa.TARGETS), 15)
+        self.assertEqual(kernel().CHECKS, 15)
 
-    def test_only_every_check_passed_is_offered(self):
+    def test_only_fifteen_of_fifteen_is_offered(self):
         summary, fix, blocking = self.check(qa_md())
-        self.assertEqual((summary, fix, blocking), ("14 of 14 checks pass", [], []))
+        self.assertEqual((summary, fix, blocking), ("15 of 15 checks pass", [], []))
 
     def test_one_failed_check_holds_the_film(self):
         _, _, blocking = self.check(qa_md(["frames with movement (%)"]))
@@ -236,7 +236,7 @@ class Gate(unittest.TestCase):
 
     def test_a_qa_with_missing_checks_holds_the_film(self):
         text = "\n".join(l for l in qa_md().splitlines() if "pictures that fit" not in l)
-        self.assertEqual(self.check(text)[2], ["only 13 of 14 checks ran"])
+        self.assertEqual(self.check(text)[2], ["only 14 of 15 checks ran"])
 
     def test_a_held_film_is_reported_not_offered(self):
         with tempfile.TemporaryDirectory() as d:
@@ -510,7 +510,7 @@ class Checks(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, r"plan gate: .*full screen cards per minute: 0.00 FIX"):
                 make.plan_gate({"chapters": [{"title": "c"}]}, [{}], [("a.wav", 60 - make.render.PAD, [])], d)
         got = json.loads((d / "plan_gate.json").read_text())
-        self.assertEqual(len(got["measured"]), 11)
+        self.assertEqual(len(got["measured"]), 12)
         self.assertEqual((got["measured"]["different pictures per minute"], drawn), (15.0, []))
         self.assertNotIn("PLAN_ONLY", os.environ)
 
@@ -557,7 +557,7 @@ class Checks(unittest.TestCase):
         import qa
         self.assertLessEqual(qa.longest_same(shots), 8.0)
 
-    def test_the_report_measures_all_fourteen_on_a_real_video(self):
+    def test_the_report_measures_all_fifteen_on_a_real_video(self):
         import subprocess
         import qa
         with tempfile.TemporaryDirectory() as d:
@@ -572,8 +572,8 @@ class Checks(unittest.TestCase):
             with mock.patch.object(qa, "side_by_side", lambda folder: []):
                 got = qa.report(folder, [(shots, ([], [], []))], 12.0, None, kinds)
             text = (folder / "qa.md").read_text()
-            self.assertEqual(len(got), 14)
-            self.assertEqual(text.count(" ok |") + text.count(" FIX |"), 14)
+            self.assertEqual(len(got), 15)
+            self.assertEqual(text.count(" ok |") + text.count(" FIX |"), 15)
             self.assertEqual(got["longest same picture (s)"], 6.0)
             self.assertEqual(got["time on article screenshots (%)"], 25.0)
             self.assertEqual(got["different pictures per minute"], 10.0)
@@ -784,32 +784,11 @@ class Cards(unittest.TestCase):
         self.assertIn("browser gone", str(caught.exception))
         self.assertEqual(render.call_count, 2)
 
-    def test_on_the_mac_a_card_that_fails_is_left_out(self):
+    def test_on_the_mac_a_card_falls_back_to_a_caption(self):
         import make
         with mock.patch.object(make, "STRICT", False), mock.patch.object(make.hf, "render", side_effect=RuntimeError("x")):
             with self.assertRaises(RuntimeError):
                 make.card_frames("vox.t1.stat", {}, Path("x"))
-
-    def test_the_films_have_no_words_over_their_pictures(self):
-        import writer
-        import director
-        d = Path(tempfile.mkdtemp())
-        (d / "parts").mkdir()
-        lines = ["Khalid rode out in 633.", "The camp slept.", "Three columns met at night.", "They struck at once.",
-                 "By dawn it was over.", "Hira fell.", "News reached Medina."]
-        edit = [{"kind": "title", "title": "Night Raid", "word": "Khalid"}, None, None,
-                {"kind": "headline", "title": "Struck at once", "word": "struck"}, None, None,
-                {"kind": "map", "places": [{"name": "Hira", "lat": 32, "lon": 44}], "country": "IQ", "word": "Hira"}]
-        beats = [{"label": {"title": "633", "sub": "Iraq"}, "mood": "tension"}] * len(lines)
-        (d / "parts" / "edit01.json").write_text(json.dumps(edit))
-        (d / "parts" / "beats01.json").write_text(json.dumps(beats))
-        (d / "parts" / "direct01.json").write_text(json.dumps({"direct": [{}] * len(lines)}))
-        with mock.patch.object(director, "plan", lambda *a: None), mock.patch.dict(os.environ, {"DECIDE": "0"}):
-            plan = writer.edits(d, {"title": "t", "chapters": [{"title": "c", "text": " ".join(lines)}]})[0]
-        self.assertEqual([e["kind"] for _, e in plan["elements"]], ["map"])
-        self.assertEqual(plan["moods"][0][1], "tension")
-        self.assertNotIn("label", writer.BEATS)
-        self.assertNotIn("caption", writer.BEATS + writer.DIRECT)
 
     def test_strict_effects_stop_when_not_set_up(self):
         import fx

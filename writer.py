@@ -140,6 +140,8 @@ EDIT = """You are the editor of a narrated history documentary made like modern 
 proof appears on screen the moment the narrator states it.
 Video: {title}
 This is chapter {chapter}. Below are its numbered narration sentences. Give a sentence at most one element:
+- title: the video's name over a picture. Only in chapter 1, on the first sentence that names the subject.
+  "title" max 3 words, "sub" max 5.
 - map: "places": 1 to 3 real places, each {{"name": "...", "lat": 0.0, "lon": 0.0}}, "country": ISO 3166 alpha-2 code
   of the country to colour, "route": true only when the sentence describes travel from the first place to the last.
 - card: a designed motion card (stop motion paper style) for a number, a date, a list, a comparison, an order, a
@@ -147,6 +149,7 @@ This is chapter {chapter}. Below are its numbered narration sentences. Give a se
   "slots": text for its slots, each within its max characters. Fill only from the sentence: short labels, no made up
   names or figures. Leave "source" empty unless the sentence names where the fact comes from. Images are added
   by the code, leave image slots out. Use <em>one phrase</em> for emphasis in headline or label slots.
+- headline: a short shocking line on a torn paper strip over the picture, for a reveal. "title" max 5 words.
 - document: a famous real artwork, photo, map or record of this exact event or person, shown on a desk. Only when it
   surely exists on Wikimedia Commons; "query": 2 to 5 words that name it exactly (place and year, or artist and
   title), "title" max 4 words, "sub" max 4 words. A plain name of an unknown person is not a document.
@@ -170,9 +173,12 @@ Return JSON with exactly {n} items, one per sentence in order, null where a sent
 ...]}}
 """
 
-BEATS = """You plan the sound of a narrated history documentary, sentence by sentence.
+BEATS = """You plan the captions and the sound of a narrated history documentary, sentence by sentence.
 Video: {title}
 For each numbered sentence return:
+- "label": a fact label shown in the lower left corner, {{"title": "max 4 words", "sub": "max 4 words"}}, or null.
+  Give labels to about half of the sentences, first to every sentence with a year, date, place, name or number.
+  "title" is the key fact (a year, a place, a name, an amount with its unit), "sub" a little context.
 - "mood": the feeling of the moment, one of calm, mystery, tension, sad, wonder, triumph.
 - "ambience": the background sound of the place, one of crowd, wind, fire, water, church, market, battle, night,
   rain, forest, or none.
@@ -183,7 +189,8 @@ Use only facts the sentences state.
 Sentences:
 {sentences}
 
-Return JSON with exactly {n} items in order: {{"beats": [{{"mood": "mystery", "ambience": "crowd", "turn": false, "sound": null, "sound_word": null}}, ...]}}
+Return JSON with exactly {n} items in order: {{"beats": [{{"label": {{"title": "July 1518", "sub": "Strasbourg"}},
+"mood": "mystery", "ambience": "crowd", "turn": false, "sound": null, "sound_word": null}}, ...]}}
 """
 
 
@@ -212,6 +219,8 @@ For each numbered sentence decide:
   a charge), film-burn (a memory, a jump in time), dreamy-zoom (legend, a dream), iris (focus on one person or
   thing), clock-wipe (time passing), wipe (another place), fade (a death, an ending), or null for a hard cut.
 - "leak": true for warm light over a moment of glory, hope or sunrise (at most two in the chapter).
+- "caption_fx": how its caption appears, if it gets one: typewriter (dates, letters, documents), number (counts and
+  amounts), slam (a shocking line), marker (a circle around the key word), or plain.
 - "accent": one sound design hit on the key word, only where it lifts the moment, about one sentence in three:
   whoosh (movement, a reveal), hit (impact, a hard fact), swell (a riser into a turn), pop (a light fact),
   paper (a letter, a map), tick (time running out), or null. "accent_word": the word it lands on.
@@ -227,7 +236,7 @@ Sentences:
 
 Return JSON with exactly {n} items in "direct", one per sentence in order:
 {{"open": "film-burn", "drop": 7, "direct": [{{"move": "push", "pace": "normal", "cut": null, "leak": false,
-"accent": "whoosh", "accent_word": "1453", "air": "smoke"}}, ...]}}
+"caption_fx": "typewriter", "accent": "whoosh", "accent_word": "1453", "air": "smoke"}}, ...]}}
 """
 HOOK = """This is the opening chapter: the first 3 sentences are the hook. Give them quick pace, strong moves and an
 accent each, so nothing on screen stands still in the first ten seconds."""
@@ -628,6 +637,45 @@ def sentences(text):
     return [x for x in re.split(r"(?<=[.!?])\s+", text.replace("\n", " ")) if x.strip()]
 
 
+MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
+UNITS = r"(?:people|men|women|children|soldiers|ships|miles|kilometres|kilometers|km|days|weeks|months|years|dead|" \
+        r"deaths|died|victims|houses|towns|tons|pounds|dollars|coins|horses|guns|feet|metres|meters|dancers|times)"
+FACTS = [  # (what, pattern, title group, sub group); the first match makes the label
+    ("date", rf"\b(?P<y2>\d{{2,4}})\s*(?P<era>BC|BCE|AD|CE)\b"
+             rf"|\b(?:(?P<m>{MONTHS})\s+(?:\d{{1,2}}(?:st|nd|rd|th)?,?\s+)?(?:of\s+)?)?(?P<y>1\d{{3}}|20\d{{2}})\b(?!\s*{UNITS})"),
+    ("number", rf"\b(?P<n>\d[\d,]*(?:\.\d+)?)\s*(?P<u>%|percent|thousand|million|billion)?\s+(?P<what>{UNITS})\b"),
+    ("name", r"\b(?P<who>(?:named|called|King|Queen|Emperor|Empress|Pope|General|Captain|Admiral|Sir|Saint|Frau|Herr|"
+             r"Lord|Lady|Doctor)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)"),
+    ("place", rf"\b(?:in|at|to|from|near|into|across|outside)\s+(?P<at>(?!(?:{MONTHS}|The|A|An)\b)[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)"),
+]
+
+
+def backup_label(sentence):
+    """A caption the code finds itself when the plan left a sentence with a date, number, name or place bare."""
+    found = {}
+    for what, pat in FACTS:
+        m = re.search(pat, sentence)
+        if m:
+            found[what] = m
+    if not found or set(found) == {"place"}:
+        return None
+    place = found["place"].group("at") if "place" in found else ""
+    if "date" in found and (len(re.findall(r"\b1\d{3}\b|\b20\d{2}\b", sentence)) > 1 or " between " in sentence):
+        del found["date"]
+    if "date" in found:
+        m = found["date"]
+        title = f"{m.group('y2')} {m.group('era')}" if m.group("era") else f"{m.group('m') or ''} {m.group('y')}".strip()
+        return {"kind": "caption", "title": title, "sub": place, "word": title.split()[0], "why": "backup: a date"}
+    if "number" in found:
+        m = found["number"]
+        title = " ".join(x for x in (m.group("n"), m.group("u"), m.group("what")) if x)
+        return {"kind": "caption", "title": title, "sub": place, "word": m.group("n"), "why": "backup: a number"}
+    if "name" in found:
+        who = re.sub(r"^(named|called)\s+", "", found["name"].group("who"))
+        return {"kind": "caption", "title": who, "sub": place, "word": who.split()[-1], "why": "backup: a name"}
+    return None  # a place alone is often said in passing; the edit plan and the map handle places
+
+
 # sounds of things that happen in the story, one folder each in assets/sfx/moments/
 MOMENTS = sorted(p.name for p in Path("assets/sfx/moments").glob("*") if p.is_dir() and any(p.iterdir())) \
     if Path("assets/sfx/moments").exists() else []
@@ -637,7 +685,7 @@ CHECK = {"number": "number", "bars": "number", "map": "place", "timeline": "date
 
 
 def headline(e):
-    """The few words of a card, for the list of what earlier chapters showed."""
+    """The few words of a card, to show as a caption when the card is dropped."""
     if e.get("places"):
         return e["places"][0].get("name", "")
     if e.get("value"):
@@ -650,27 +698,25 @@ def headline(e):
     return str(e.get("title") or e.get("source") or e.get("text", ""))[:30]
 
 
-TEXT = ("caption", "title", "headline")  # words laid over a picture; the films have none
-
-
 def checked(e, d):
     """The second opinion of colibri (GLiNER2.5-Decide) on a card. When it is sure the sentence is plain story
-    ("scene"), the card goes; otherwise the card stays and the check goes into "why"."""
+    ("scene"), the card becomes a caption; otherwise the card stays and the check goes into "why"."""
     if not d or e.get("kind") not in CHECK:
         return e
     if d["show"] == "scene" and d["sure"] >= float(os.getenv("DECIDE_SURE", "0.6")):
-        return {}
+        return {"kind": "caption", "title": headline(e), "sub": e.get("sub", ""), "word": e.get("word"),
+                "why": f"{e.get('why', '')}; check: story, not proof ({d['sure']}), so a caption"}
     agree = "agrees" if d["show"] == CHECK[e["kind"]] else f"said {d['show']}"
     return {**e, "why": f"{e.get('why', '')}; check {agree} ({d['sure']})"}
 
 
 def edits(folder, script):
     """The edit plan of every chapter. Three answers per chapter, kept in parts/: edit01.json (proof cards on chosen
-    sentences, each with the word it lands on and why), beats01.json (mood, place sound and turning point for every
-    sentence) and direct01.json (camera move, pace, transition, light leak, sound hit
+    sentences, each with the word it lands on and why), beats01.json (a caption, mood, place sound and turning point
+    for every sentence) and direct01.json (camera move, pace, transition, light leak, caption animation, sound hit
     and particles per sentence, the chapter opening and the music drop). The strongest Kaggle model answers all of
     them in one run (director.py); what it could not answer, the Gemini key plans. colibri checks every card
-    (decide01.json).
+    (decide01.json) and the code adds a caption where a sentence with a date, number, name or place was left bare.
     Positions are word numbers in the chapter text, which match the narration's words one to one.
     Returns per chapter {"elements": [(word, element)], "moods": [(word, mood)], "ambience": [(word, name)],
     "turns": [word], "sounds": [(word, moment)], "lines": [(word, sentence)], "direct": [(word, choices)],
@@ -700,7 +746,7 @@ def edits(folder, script):
                     got = llm(ask(i, ch, prompt, lines), as_json=True, temp=0.5, fast=True)
                     got = got if key == "direct" else got.get(key) or got.get("items") or []
                     f.write_text(json.dumps(got, ensure_ascii=False, indent=1), encoding="utf-8")
-                except (Exception, SystemExit) as err:  # colibri's moods and turns below still carry the chapter
+                except (Exception, SystemExit) as err:  # the backup labels below still give the chapter captions
                     say(f"  {name} plan failed ({str(err)[:80]}), going on with the backup plan")
             items = json.loads(f.read_text(encoding="utf-8")) if f.exists() else []
             whole = items if isinstance(items, dict) else {}
@@ -725,7 +771,7 @@ def edits(folder, script):
             look = {"move": look.get("move") if look.get("move") in MOVES else None,
                     "pace": look.get("pace") if look.get("pace") in ("quick", "normal", "slow") else None,
                     "cut": look.get("cut") if look.get("cut") in CUTS else None, "leak": look.get("leak") is True,
-                    "air": look.get("air") if look.get("air") in AIRS else None}
+                    "caption_fx": look.get("caption_fx"), "air": look.get("air") if look.get("air") in AIRS else None}
             plan["direct"].append((starts[k], look))
             if planned[2][k].get("accent") in ACCENTS:
                 plan["accents"].append((place(lines, starts, k, planned[2][k].get("accent_word")), planned[2][k]["accent"]))
@@ -733,18 +779,21 @@ def edits(folder, script):
                 cid = hf.resolve(str(e.get("card", "")))
                 ok = (cid and hf.catalog()[cid]["tier"] == "tier1" and f"card {cid}" not in maps
                       and hf.filled(cid, e.get("slots") or {}) >= 0.7)
-                e = {**e, "card": cid} if ok else {}
+                e = {**e, "card": cid} if ok else {**e, "kind": "caption", "title": headline(e)}
                 maps.add(f"card {cid}")
-            if e.get("kind") == "map":  # the same map twice is a repeat: the second goes
+            if e.get("kind") == "map":  # the same map twice is a repeat, the second becomes a caption
                 where = tuple(sorted(x.get("name", "") for x in e.get("places", [])))
-                e = {} if where in maps else e
+                e = {**e, "kind": "caption", "title": headline(e)} if where in maps else e
                 maps.add(where)
-            if e.get("kind") in TEXT:  # no words over the pictures: the film has no captions, titles or headlines
-                e = {}
-            if e.get("kind") and k - last_card >= 3:
-                last_card = k
-            else:
-                e = {}
+            label = beat.get("label") if isinstance(beat.get("label"), dict) and beat["label"].get("title") else None
+            if e.get("kind") and (k - last_card >= 3 or e["kind"] in ("title", "caption")):
+                if e["kind"] == "title" and (i > 1 or any(x[1]["kind"] == "title" for x in plan["elements"])):
+                    e = {**e, "kind": "caption"}
+                last_card = k if e["kind"] != "caption" else last_card
+            elif label:
+                e = {**label, "kind": "caption", "word": str(label["title"]).split()[0]}
+            elif k - 1 not in labelled:
+                e = backup_label(lines[k]) or {}
             if e.get("kind"):
                 plan["elements"].append((place(lines, starts, k, e.get("word"), labelled), e))
                 labelled.add(k)
@@ -757,7 +806,7 @@ def edits(folder, script):
                 plan["turns"].append(starts[k])
             if beat.get("sound") in MOMENTS:
                 plan["sounds"].append((place(lines, starts, k, beat.get("sound_word")), beat["sound"]))
-        shown += [f"{e['kind']}: {headline(e)}" for _, e in plan["elements"]]
+        shown += [f"{e['kind']}: {headline(e)}" for _, e in plan["elements"] if e["kind"] not in ("caption", "title")]
         out.append(plan)
     return out
 

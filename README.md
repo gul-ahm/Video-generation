@@ -2,7 +2,7 @@
 
 History Studio turns a title into a finished, long YouTube history video. You type something like
 "The Fall of Constantinople 1453" and about an hour and a half later there is a 20 to 25 minute film on disk:
-narration in my own cloned voice, pictures, camera moves, music, sound effects, a thumbnail, subtitles
+narration in my own cloned voice, pictures, camera moves, captions, music, sound effects, a thumbnail, subtitles
 and a ready YouTube title and description.
 
 It runs on a MacBook Air M2 with 16 GB of RAM and free services only. The heavy picture work goes to Kaggle's free
@@ -20,7 +20,7 @@ You pick one in the dashboard before a video starts.
 | Script | written by Gemini from the title | written only from checked research claims |
 | Research | the model's own knowledge | 100 to 150 web sources read in full |
 | Pictures | illustrated picture book scenes | realistic photographs |
-| Proof on screen | maps and cards | the same, plus screenshots of the real articles |
+| Proof on screen | maps, title cards, fact captions | the same, plus screenshots of the real articles |
 | Movement | the character is cut out and breathes and sways | camera moves only, no faces of real people |
 | Typical length | 5 to 90 minutes, you choose | about 22 minutes |
 
@@ -51,12 +51,12 @@ The voice, the director and the pictures run at the same time, so the slowest of
    comes back short is asked for again, so a 22 minute video really is 22 minutes.
 2. **Voice.** Chatterbox (MLX build for Apple Silicon) clones my voice from a short sample. Each chapter is cached
    by the hash of its text, so editing one chapter only remakes that chapter's audio. `align.py` then finds the
-   exact time of every word, which is what lets a card land on the spoken word.
+   exact time of every word, which is what lets a caption land on the spoken word.
 3. **Director.** The strongest model available on Kaggle Benchmarks plans the edit, sentence by sentence (below).
 4. **Pictures.** All pictures of the video go to the Kaggle GPU in one run (below).
-5. **Render.** ffmpeg puts it together. Transitions and light leaks come from Remotion, animated chapter
-   titles and cards from HyperFrames, and `sound.py` mixes a mood based music bed, place sounds and the sound hits.
-6. **Quality check.** `qa.py` measures the finished file: cuts per minute, shot length, movement, sound
+5. **Render.** ffmpeg puts it together. Transitions and light leaks come from Remotion, animated titles and
+   kinetic captions from HyperFrames, and `sound.py` mixes a mood based music bed, place sounds and the sound hits.
+6. **Quality check.** `qa.py` measures the finished file: cuts per minute, shot length, movement, caption time, sound
    effects per minute, loudness (it aims at YouTube's -14 LUFS), how close a card lands to its spoken word, and the
    longest still moment.
 7. **YouTube pack.** Five title options, a description, hashtags, tags and thumbnail text, based on real search
@@ -93,11 +93,10 @@ GPU hours. History Studio uses it as free access to the strongest models.
 **The director** (`director.py`). For every chapter the model answers three prompts:
 
 - *Edit:* where a proof card, a map or a document goes, and on which word it lands.
-- *Beats:* the music mood, the place sound and the turning points for every sentence. The films have no words
-  over their pictures: no captions, no title or headline strips.
+- *Beats:* a caption, the music mood, the place sound and the turning points for every sentence.
 - *Direct:* for every sentence the camera move (push, pull, pan, rise, dive, drift or shake), the pace, the
   transition into it (zoom blur, cross zoom, film burn, dreamy zoom, iris, clock wipe, wipe or fade), light leaks,
-  one sound design hit on its key word, particles in the air, the chapter opening, and the
+  how its caption animates, one sound design hit on its key word, particles in the air, the chapter opening, and the
   one sentence before which the music drops out so the reveal hits harder.
 
 All prompts of a video go in a single benchmark run, two at a time. Models are tried in order
@@ -232,7 +231,7 @@ kernel.py stage. Every queue message on Telegram carries its link: Save Version,
    the link to Telegram with the quality result and Yes and No buttons. A film is offered only when all 15
    quality checks pass; otherwise it goes to Drive as `_held` and Telegram says which checks failed.
 
-The 14 checks (`qa.py`) are the edit's nine (cuts, shot length, movement, cards, sound, loudness,
+The 15 checks (`qa.py`) are the edit's ten (cuts, shot length, movement, captions and cards, sound, loudness,
 timing) and five for what the eye sees in a documentary: no picture on screen longer than 8 seconds, article
 pages at most a quarter of the film, 4 to 12 different pictures a minute, at least 90% of pictures judged by a model
 that sees to fit their own sentence and era (the GPU stage redraws the ones that do not, twice at most), and every
