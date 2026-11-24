@@ -332,7 +332,7 @@ class Checks(unittest.TestCase):
 
     def test_a_long_beat_gets_more_than_one_picture_and_an_article_beat_keeps_its_own(self):
         import make
-        ch = {"shots": [("Wide shot of the camp", 40, "forty words", ["pose"]),
+        ch = {"shots": [("Wide shot of the camp", 50, "fifty words", ["pose"]),
                         ("source: a.png | en.wikipedia.org | | Close shot of a letter", 10, "ten words", []),
                         ("Close shot of a sword", 12, "twelve", [])]}
         with mock.patch.object(make, "lit", lambda ch, plan: [x[0] for x in ch["shots"]]):
