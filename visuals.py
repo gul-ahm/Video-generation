@@ -453,6 +453,8 @@ def scenes(prompts, folder, poses=None):
     gap = float(os.getenv("AI_GAP", "46"))
     w, h = size()
     paths, todo, moves = pending(prompts, folder, poses)
+    if os.getenv("PLAN_ONLY") == "1":  # the plan gate: where each picture will be is enough, nothing is drawn
+        return paths
     if (todo or moves) and os.getenv("MAC_PICTURES", "1") == "0":
         raise SystemExit(f"{len(todo)} pictures and {len(moves)} pose frames did not come from Kaggle and drawing on "
                          "the Mac is off (MAC_PICTURES=0). Run the build again, finished pictures are kept.")

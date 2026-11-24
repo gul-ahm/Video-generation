@@ -482,7 +482,7 @@ def check_pictures(s, plans, folder):
         indent=1, ensure_ascii=False), encoding="utf-8")
 
 
-def plan_gate(s, plans, voices, folder):
+def plan_gate(s, plans, voices, folder, pictures=True):
     """The twelve checks the edit plan decides (qa.measure: cuts, cards, captions, sound, pictures, pages), worked out
     on the GPU machine before any chapter is rendered: every chapter's shots as its chapter machine will make them,
     with nothing drawn. A film that would be held is stopped here, with the checks it misses, instead of after an
@@ -497,6 +497,8 @@ def plan_gate(s, plans, voices, folder):
     finally:
         os.environ.pop("PLAN_ONLY")
     got = qa.measure(folder, chapters, sum(dur + render.PAD for _, dur, _ in voices))
+    if not pictures:  # before the pictures are drawn: that one is measured after their check
+        got.pop("pictures that fit their line (%)", None)
     miss = qa.misses(got)
     (folder / "plan_gate.json").write_text(json.dumps({"measured": got, "misses": miss}, indent=1), encoding="utf-8")
     print(f"  plan: {len(got) - len(miss)} of {len(got)} checks pass before rendering", flush=True)
@@ -744,6 +746,10 @@ def build(folder):
         if os.getenv("CLOUD") == "1":  # on Kaggle the voice and the pictures share the GPUs, so one after the other
             voices = voice.narrate(s["chapters"], folder)
             plans = get_plans()
+            # the plan is known once the voice is: a film the plan gate would hold draws and checks no picture (day 6
+            # spent its pictures, two picture checks and the day's Gemini calls, then the gate held it for captions)
+            if not os.getenv("RENDER_PART"):
+                plan_gate(s, plans, voices, folder, pictures=False)
             on_kaggle(s, plans, folder)
             # only the GPU stage checks: a chapter machine has no GPU to redraw on, and five of them checking the same
             # pictures at once deleted the ones they disliked and spent the vision quota five times over

@@ -512,6 +512,25 @@ class Checks(unittest.TestCase):
         self.assertEqual((got["measured"]["different pictures per minute"], drawn), (15.0, []))
         self.assertNotIn("PLAN_ONLY", os.environ)
 
+    def test_before_the_pictures_the_gate_leaves_their_check_for_later_and_draws_none(self):
+        import make
+        import visuals
+        d = Path(tempfile.mkdtemp())
+        pics = [d / f"s{k}.jpg" for k in range(12)]
+        timeline = lambda ch, dur, words, folder, plan, first: (
+            [(p, 5.0, 0.0, {"caption": {"title": "x"}}) for p in pics], [], ([0] * 10, [(0, 60)], []))
+        with mock.patch.object(make, "timeline", timeline), mock.patch.object(make, "STRICT", True):
+            with self.assertRaises(SystemExit) as err:
+                make.plan_gate({"chapters": [{"title": "c"}]}, [{}], [("a.wav", 60 - make.render.PAD, [])], d, pictures=False)
+        self.assertNotIn("pictures that fit", str(err.exception))
+        self.assertNotIn("pictures that fit their line (%)", json.loads((d / "plan_gate.json").read_text())["measured"])
+        with mock.patch.dict(os.environ, {"PLAN_ONLY": "1"}), mock.patch.object(visuals, "local") as local, \
+                mock.patch.object(visuals, "fetch") as fetch:
+            got = visuals.scenes(["a fort at dawn", "a river crossing"], d / "img")
+        self.assertEqual(len(got), 2)
+        self.assertTrue(all(isinstance(x, Path) and not x.exists() for x in got))
+        local.assert_not_called(), fetch.assert_not_called()
+
     def test_an_article_shows_briefly_then_the_beat_has_its_own_pictures(self):
         import make
         with tempfile.TemporaryDirectory() as d:
