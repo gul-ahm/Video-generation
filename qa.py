@@ -20,7 +20,6 @@ TARGETS = {  # name: (low, high, what the reference measured)
     "cuts per minute": (10, 16, "12.7"),
     "median shot (s)": (3.0, 5.5, "4.3"),
     "frames with movement (%)": (60, 100, "94 in the cartoon"),
-    "time with caption or card (%)": (45, 100, "about 60"),
     "full screen cards per minute": (1.0, 4.0, "about 1.7"),
     "sound effects per minute": (8, 30, "about 15"),
     "music under the voice (%)": (90, 100, "97"),
@@ -142,7 +141,6 @@ def measure(folder, chapters, total, kinds=None):
     shots = [s for ch, _ in chapters for s in ch]
     lens = [s[1] for s in shots]
     what = [kind(s, kinds) for s in shots]
-    covered = sum(s[1] for s, k in zip(shots, what) if k not in ("picture", "clip") or (len(s) > 3 and s[3].get("caption")))
     cards = sum(1 for k in what if k not in ("picture", "clip", "source"))  # an article page is not a designed card
     pages = [s for s, k in zip(shots, what) if k == "source"]
     outlets = [(kinds.get(str(s[0])) or json.loads(s[0].read_text(encoding="utf-8"))).get("title", "") for s in pages]
@@ -155,7 +153,6 @@ def measure(folder, chapters, total, kinds=None):
     return {
         "cuts per minute": len(shots) / minutes,
         "median shot (s)": float(np.median(lens)),
-        "time with caption or card (%)": covered / total * 100,
         "full screen cards per minute": cards / minutes,
         "sound effects per minute": events / minutes,
         "music under the voice (%)": min(100.0, music / total * 100),

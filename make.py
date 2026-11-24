@@ -59,7 +59,7 @@ def script(topic, minutes):
 
 def card_spec(e, folder, pics):
     """Write a full screen card spec next to the pictures. A document card first finds a public domain picture on
-    Wikimedia Commons; without one it becomes a caption. Returns (path or caption, credit)."""
+    Wikimedia Commons; without one there is no card. Returns (path or None, credit)."""
     e = dict(e)
     if e["kind"] == "document":
         words = str(e.get("query", "")).split()
@@ -74,7 +74,7 @@ def card_spec(e, folder, pics):
         except Exception:
             found = None
         if not dst.exists():
-            return {**e, "kind": "caption"}, None
+            return None, None
         e["image"] = str(dst)
     if e["kind"] == "card":  # a HyperFrames card: its frames are drawn now, on this thread (the browser is not shared)
         slots = {k: v for k, v in (e.get("slots") or {}).items() if k not in hf.image_slots(e["card"])}
@@ -82,9 +82,9 @@ def card_spec(e, folder, pics):
         out = folder / "hf" / hashlib.md5(json.dumps([e["card"], slots], sort_keys=True).encode()).hexdigest()[:10]
         try:
             card_frames(e["card"], slots, out)
-        except Exception as err:  # on the Mac the words still show as a caption; in the cloud the build stops
+        except Exception as err:  # on the Mac the card is left out; in the cloud the build stops
             print(f"  card {e['card']} skipped ({str(err)[:60]})")
-            return {"kind": "caption", "title": writer.headline(e)}, None
+            return None, None
         e = {"kind": "hf", "card": e["card"], "frames": str(out)}
     if e["kind"] == "list":
         e["images"] = [str(p) for p in pics[:len(e.get("items", []))]]
@@ -597,6 +597,8 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
         if e.get("kind") in CARDS and dur - t > 2.0:
             e, credit = card_spec(e, folder, pics)
             credits += [credit] if credit else []
+            if e is None:
+                continue
             if isinstance(e, Path):
                 shots = cut_in(shots, t, e, min(3.5, dur - t))
                 continue

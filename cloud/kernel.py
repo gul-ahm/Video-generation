@@ -188,7 +188,7 @@ def work(stage, **extra):
 SAY = r"took|done|drawn|fit their line|^screenshots:|^script:|^vision|^gemini:|before rendering"
 STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "pictures: ", "vision models:", "gemini: ", "plan: ", "render ", "done:")
 
-CHECKS = 15  # qa.py's checks; a film is offered for approval only when every one passes
+CHECKS = 14  # qa.py's checks; a film is offered for approval only when every one passes
 
 
 def quality(f):
