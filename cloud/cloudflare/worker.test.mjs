@@ -40,7 +40,10 @@ function world({ refuse = () => false, status = (url) => (url.includes("studio-g
   const last = (stage, part) => pushes.filter((r) => r.stage === stage && (part === undefined || r.part === part)).at(-1);
   const report = (run, event, extra = {}) => call("/hook", { event, id: run.id, stage: run.stage, part: run.part, nonce: run.nonce, ...extra });
   const state = () => JSON.parse(kv.get("state"));
-  return { kv, told, pushes, deleted, env, call, last, report, state, tick: () => call("/tick") };
+  const telegram = (text) => worker.fetch(new Request("https://w/telegram", {
+    method: "POST", headers: { "X-Telegram-Bot-Api-Secret-Token": "s" },
+    body: JSON.stringify({ message: { chat: { id: 7 }, message_id: 1, text } }) }), env).then(() => told.at(-1));
+  return { kv, told, pushes, deleted, env, call, last, report, state, telegram, tick: () => call("/tick") };
 }
 
 async function toParts(w, chapters = 3) {
@@ -435,4 +438,17 @@ test("the queue message carries the daily notebook's link, and the daily noteboo
   await w.tick();
   assert.equal(w.deleted.length, deleted);
   assert.equal(w.pushes.filter((r) => r.stage === "gpu").length, 2);
+});
+
+test("/hold stops a batch that waits, and its videos come first in the next one", async () => {
+  const w = world({ perDay: 2, status: () => "running" });
+  await w.tick();
+  assert.match(await w.telegram("/hold"), /has research on Kaggle now/, "not while a stage runs");
+  for (const r of w.pushes.filter((x) => x.stage === "research")) await w.report(r, "done");
+  const gpu = w.last("gpu");
+  await w.report({ ...gpu, ...gpu.jobs[0] }, "failed", { kind: "busy", error: "service busy: wait=3600 quota", wait: 3600 });
+  await w.report({ ...gpu, ...gpu.jobs[1] }, "failed", { kind: "busy", error: "service busy: wait=3600 quota", wait: 3600 });
+  assert.match(await w.telegram("/hold"), /Held: day 1, day 2/);
+  const s = w.state();
+  assert.deepEqual([s.batch, s.retry, s.tries], [null, [1, 2], {}]);
 });

@@ -14,7 +14,7 @@
 //   No            asks what is wrong and keeps the reason and the screenshots for the fix step
 //   /settings     the upload settings, asked once with their options; title, description, hashtags and captions
 //                 are made by the studio, paid promotion and AI use are always "No"
-//   /status /next /day N /pause /resume /perday N /starthour H /help
+//   /status /next /day N /pause /resume /hold /perday N /starthour H /help
 //
 // State lives in KV: "state", "plan", "kernel" (cloud/kernel.py), "settings", "job:<id>", "await".
 // The Kaggle kernels report back on /hook with the shared secret; cloud.py uses /start and /tick.
@@ -39,6 +39,7 @@ const HELP = `History Studio
 /next  start the next day of the plan now
 /day N  start day N now
 /pause  stop the automatic start, /resume  start it again (/resume 2 goes on from day 2)
+/hold  stop the batch's videos where they are, while nothing of theirs runs on Kaggle; they come first next batch
 /perday N  videos a day (now 4), /starthour H  when the day's videos begin, India time (now 6)
 /settings  choose the upload settings (/settings reset to choose again)
 /undo  take back the last Yes`;
@@ -277,6 +278,22 @@ async function jobFailed(env, job, s, why) {
     failedDay(s, job.day));
   await batchEnded(env, s);
   await gpuWhenReady(env, s);  // the others may have been waiting for this one's research
+}
+
+// a batch that should not go on with the code it has (it waits for new code): its videos stop where they are and
+// come first in the next batch, not counted as a failure. Only while nothing of theirs runs or waits on Kaggle.
+async function hold(env, s) {
+  const jobs = await batchJobs(env, s);
+  if (!jobs.length) return "No video is running.";
+  for (const job of jobs) {
+    const busy = Object.entries(await units(env, job)).filter(([, u]) => ["pushed", "running"].includes(u.state));
+    if (busy.length) return `Day ${job.day} has ${busy.map(([k]) => k).join(", ")} on Kaggle now; send /hold after it.`;
+  }
+  for (const job of jobs) await put(env, `job:${job.id}`, { ...job, status: "held", error: "held with /hold" });
+  s.retry = [...new Set([...jobs.map((j) => j.day), ...(s.retry || [])])];
+  s.batch = null;
+  await put(env, "state", s);
+  return `Held: ${jobs.map((j) => `day ${j.day}`).join(", ")}. They come first in the next batch (/resume).`;
 }
 
 // the batch is over when none of its videos runs any more
@@ -740,6 +757,7 @@ async function command(text, env) {
       `one after another, from day ${s.next_day}. You only need to review them.`);
     return tick(env);
   }
+  if (cmd === "/hold") return say(env, await hold(env, s));
   if (cmd === "/perday" || cmd === "/starthour") {
     const n = Number(arg);
     if (!(n >= (cmd === "/perday" ? 1 : 0) && n <= (cmd === "/perday" ? 8 : 23))) return say(env, `Send it like: ${cmd} 4`);
