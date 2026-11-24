@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -267,7 +268,11 @@ def break_long_runs(shots):
         s = shots[i]
         if pic(s) and s[1] > SAME_MAX:
             s[1] /= 2
-            shots.insert(i + 1, [s[0], s[1], s[2], {k: v for k, v in s[3].items() if k not in ("caption", "intro")}])
+            second = [s[0], s[1], s[2], {k: v for k, v in s[3].items() if k not in ("caption", "intro")}]
+            cap = s[3].get("caption")
+            if cap and cap["_t"] >= sum(x[1] for x in shots[:i]) + s[1]:  # its word is in the second half
+                second[3]["caption"] = s[3].pop("caption")
+            shots.insert(i + 1, second)
     runs = []  # [first, last, seconds] of one picture in a row
     for i, s in enumerate(shots):
         if runs and pic(s) and pic(shots[i - 1]) and qa.root(s[0]) == qa.root(shots[i - 1][0]):
@@ -337,6 +342,16 @@ def source_parts(line):
     return tuple(([x.strip() for x in line[7:].split("|")] + ["", "", ""])[:4])
 
 
+def beat_lengths(ch, dur, words):
+    """Seconds each narration beat is spoken, from the voice's word times."""
+    times = [w[0] for w in words] or [0.0]
+    cum, starts = 0, []
+    for _, n, *_ in ch["shots"]:
+        starts.append(times[min(cum, len(times) - 1)] if starts else 0.0)
+        cum += n
+    return [round(b - a, 2) for a, b in zip(starts, starts[1:] + [dur])]
+
+
 def pictures_of(ch, plan, skip=()):
     """Every picture a chapter draws, in order: (prompt, beat, pose steps). A clip line is drawn like a picture line
     when it gets no real footage (in the cloud always: the render machine has no GPU); a beat that shows an article
@@ -354,10 +369,20 @@ def pictures_of(ch, plan, skip=()):
             p = source_parts(p)[3]
             if not p:
                 continue
-        views = max(1, min(3, -(-shot[1] // WORDS_PER_PICTURE)))
+        views = -(-shot[1] // WORDS_PER_PICTURE)
+        if ch.get("lengths"):  # a slowly spoken beat: one picture every SAME_MAX seconds, or it is on too long
+            views = max(views, math.ceil(ch["lengths"][i] / SAME_MAX))
+        views = max(1, min(3, views))
         poses = shot[3] if os.getenv("POSES", "1") == "1" else []
         out += [(p if v == 0 else f"{p}, {VIEWS[v - 1]}", i, poses if v == 0 else []) for v in range(views)]
     return out
+
+
+def spoken(s, voices):
+    """How long each beat is spoken, on every chapter, for pictures_of: the GPU stage, the plan gate and every
+    chapter machine then plan the same pictures."""
+    for ch, (_, dur, words) in zip(s["chapters"], voices):
+        ch["lengths"] = beat_lengths(ch, dur, words)
 
 
 def on_kaggle(s, plans, folder):
@@ -818,6 +843,7 @@ def build(folder):
         get_plans = lambda: planning.result() if planning else [{}] * len(s["chapters"])
         if os.getenv("CLOUD") == "1":  # on Kaggle the voice and the pictures share the GPUs, so one after the other
             voices = voice.narrate(s["chapters"], folder)
+            spoken(s, voices)
             plans = get_plans()
             # the plan is known once the voice is: a film the plan gate would hold draws and checks no picture (day 6
             # spent its pictures, two picture checks and the day's Gemini calls, then the gate held it for captions)
@@ -832,6 +858,7 @@ def build(folder):
         else:  # the pictures need only the prompts and the moods, so Kaggle draws them while the Mac is still speaking
             drawing = ex.submit(lambda: on_kaggle(s, get_plans(), folder))
             voices = voice.narrate(s["chapters"], folder)
+            spoken(s, voices)
             plans = get_plans()
             drawing.result()
     write_plan(folder, s, plans, voices)

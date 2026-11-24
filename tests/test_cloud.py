@@ -340,6 +340,9 @@ class Checks(unittest.TestCase):
         self.assertEqual([(beat, poses) for _, beat, poses in got], [(0, ["pose"]), (0, []), (0, []), (1, []), (2, [])])
         self.assertTrue(got[1][0].endswith(make.VIEWS[0]))
         self.assertEqual(got[3][0], "Close shot of a letter")
+        ch["lengths"] = [10, 3, 16.0]  # the sword is spoken slowly: one picture every 7.5 s
+        with mock.patch.object(make, "lit", lambda ch, plan: [x[0] for x in ch["shots"]]):
+            self.assertEqual([beat for _, beat, _ in make.pictures_of(ch, {})], [0, 0, 0, 1, 2, 2, 2])
         self.assertEqual(make.source_parts("source: a.png | bbc.com | 2024-01-02")[:3], ("a.png", "bbc.com", "2024-01-02"))
 
     def test_a_picture_that_misses_its_line_is_drawn_again_and_counted(self):
@@ -558,10 +561,14 @@ class Checks(unittest.TestCase):
         self.assertLessEqual(qa.longest_same(shots), 8.0)
         end = make.break_long_runs(pic("a", 1) + pic("b", 3))
         self.assertEqual([s[0].stem for s in end], ["a", "a", "b", "b"], "at the end, the beat before")
-        one = make.break_long_runs([[Path("a.jpg"), 2.0, 0.0, {}], [Path("b.jpg"), 9.0, 0.0, {"caption": {"title": "x"}}],
+        one = make.break_long_runs([[Path("a.jpg"), 2.0, 0.0, {}], [Path("b.jpg"), 9.0, 0.0, {"caption": {"title": "x", "_t": 3.0}}],
                                     [Path("c.jpg"), 3.0, 0.0, {}]])
         self.assertEqual([(s[0].stem, s[1], "caption" in s[3]) for s in one],
                          [("a", 2.0, False), ("b", 4.5, True), ("c", 4.5, False), ("c", 3.0, False)], "one long shot in two")
+        late = make.break_long_runs([[Path("b.jpg"), 9.0, 0.0, {"caption": {"title": "x", "_t": 6.0}}]])
+        self.assertEqual(["caption" in s[3] for s in late], [False, True], "the caption stays on its word")
+        self.assertEqual(make.beat_lengths({"shots": [("a", 3), ("b", 2)]}, 10.0, [(0, 0, "w")] * 3 + [(4.5, 0, "w")] * 2),
+                         [4.5, 5.5])
         card = make.break_long_runs(pic("a", 3) + [[Path("card_1.json"), 3.0, 0.0]])
         self.assertEqual([s[0].stem for s in card], ["a", "a", "a", "card_1"], "a card is never borrowed")
 
