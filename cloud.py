@@ -100,7 +100,7 @@ def deploy(ref="main", upload=True):
     """The code of one GitHub commit onto the Mac, instead of files copied by hand (a copied archive once put the
     empty .env.example of the repository over the keys, and a stale copy once ran instead of the new one). Every
     file of the commit but MINE is written, then read back and compared byte for byte; the files it replaced are
-    kept in _ref/ and put back if the tests fail. Then sync, and the worker when worker.js changed. upload=False
+    kept in _ref/ and put back if the tests fail. Then sync, and the worker when worker.js or kernel.py changed. upload=False
     (deploy <commit> --no-sync) leaves the datasets as they are: a kernel waiting in Kaggle's queue checks the code
     version when it starts, and a sync in between would stop it."""
     import requests
@@ -145,7 +145,9 @@ def deploy(ref="main", upload=True):
         print(f"  sync left for later ({', '.join(running)} running); cloud.py smoke syncs first", flush=True)
     elif upload:
         sync()
-    if "cloud/cloudflare/worker.js" in changed:
+    # the worker hands kernel.py to every stage from its store: a changed kernel.py has to go there too (the 14 checks
+    # of bad0f95 were in the code while the stores still had the kernel that waited for 15)
+    if {"cloud/cloudflare/worker.js", "cloud/kernel.py", "plan.json"} & set(changed):
         import worker
         worker.deploy()
 
