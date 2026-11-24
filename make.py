@@ -260,25 +260,25 @@ def put_caption(shots, t, e):
 
 def break_long_runs(shots):
     """A beat that is spoken slowly keeps its one picture on for longer than SAME_MAX (day 6: 9 s): the last shot of
-    such a run shows the next beat's picture a little early, or the one before when there is none after. Again
-    until no run is too long, as the borrowed picture's own run grows."""
-    for _ in range(len(shots)):
-        run, start = 0.0, 0
-        for i, s in enumerate(shots):
-            if i and qa.root(s[0]) == qa.root(shots[i - 1][0]):
-                run += s[1]
-            else:
-                run, start = s[1], i
-            if run > SAME_MAX and i > start:
-                end = next((k for k in range(i + 1, len(shots)) if qa.root(shots[k][0]) != qa.root(s[0])), None)
-                other = shots[end] if end is not None else shots[start - 1] if start else None
-                if other is None or other[0].suffix.lower() not in (".jpg", ".png") or len(s) < 4:
-                    return shots
-                last = (end - 1) if end is not None else start
-                shots[last][0] = other[0]
-                break
+    such a run shows the next beat's picture a little early, or its first shot the beat before's a little longer,
+    whichever stays within SAME_MAX itself. A run neither can take stays as it is."""
+    pic = lambda s: s[0].suffix.lower() in (".jpg", ".png") and len(s) > 3
+    runs = []  # [first, last, seconds] of one picture in a row
+    for i, s in enumerate(shots):
+        if runs and pic(s) and pic(shots[i - 1]) and qa.root(s[0]) == qa.root(shots[i - 1][0]):
+            runs[-1][1:] = [i, runs[-1][2] + s[1]]
         else:
-            return shots
+            runs.append([i, i, s[1]])
+    for k, (first, last, secs) in enumerate(runs):
+        if secs <= SAME_MAX or first == last or not pic(shots[first]):
+            continue
+        after, before = (runs[k + 1] if k + 1 < len(runs) else None), (runs[k - 1] if k else None)
+        if after and pic(shots[after[0]]) and after[2] + shots[last][1] <= SAME_MAX:
+            shots[last][0] = shots[after[0]][0]
+            after[2] += shots[last][1]
+        elif before and pic(shots[before[1]]) and before[2] + shots[first][1] <= SAME_MAX:
+            shots[first][0] = shots[before[1]][0]
+            before[2] += shots[first][1]
     return shots
 
 
