@@ -150,7 +150,9 @@ def state(direction):
 def work(stage, **extra):
     """documentary/doc.py for this stage. Its progress lines go to Telegram through the worker; when it fails, the
     error carries its last lines, so the message says what broke instead of only "exit status 1"."""
-    env = {**os.environ, "STYLE": RUN.get("style", "documentary"), "DOC_STYLE": RUN.get("style", "documentary"), **extra}
+    import drive  # WORKER_URL and HOOK_SECRET: the AI Studio calls are counted at the worker (writer.tell_usage)
+    env = {**os.environ, **drive.env("worker"), "STYLE": RUN.get("style", "documentary"),
+           "DOC_STYLE": RUN.get("style", "documentary"), **extra}
     cmd = [sys.executable, "-u", "documentary/doc.py", RUN["title"], str(RUN["minutes"]), RUN.get("subject", "")]
     if stage == "check":  # cloud.py check: only the picture check, on a few pictures already made, nothing redrawn
         cmd = [sys.executable, "-u", "make.py", "check", str(folder())]

@@ -59,6 +59,7 @@ export default {
         const b = await req.json();
         return Response.json({ message: await startJob(env, b.day, b.from, b) });
       }
+      if (url.pathname === "/usage" && req.method === "POST") return Response.json(await countCalls(env, await req.json()));
       if (url.pathname === "/say" && req.method === "POST") {  // the kernels' messages, so they are kept too
         const b = await req.json();
         return Response.json(await say(env, b.text, b.buttons));
@@ -183,6 +184,35 @@ async function pushGpu(env, jobs, requeues = 0) {
 // the GPU session, once every video of the batch has its research. Two researches ending at the same moment both
 // see all done, so only the one that ended last pushes; the watch pushes it otherwise. A video whose GPU part failed
 // or waits for a service goes into the next session, after the one running has finished every video it was given.
+// AI Studio's free calls, counted here as the stages make them (writer.tell_usage). The roles mirror writer.ROLES;
+// the limits are the project's (AI Studio rate limit page, 24 Nov). They come back at midnight in California.
+const QUOTA = {
+  read: { models: ["gemini-3.1-flash-lite"], perDay: 500 },
+  see: { models: ["gemini-3.5-flash-lite"], perDay: 500 },
+  write: { models: ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3-flash", "gemini-2.5-flash"], perDay: 80 },
+};
+const GPU_CALLS = { read: 25, see: 100 };  // one video's GPU stage: edit plans, and the picture check five a call
+const pacificDay = () => new Date(Date.now() - 8 * 3600e3).toISOString().slice(0, 10);
+
+async function countCalls(env, add) {
+  const key = `calls:${pacificDay()}`, got = await get(env, key, {});
+  for (const [m, n] of Object.entries(add)) got[m] = (got[m] || 0) + Number(n || 0);
+  await env.KV.put(key, JSON.stringify(got), { expirationTtl: 8 * 86400 });
+  return got;
+}
+
+async function callsLeft(env) {
+  const used = await get(env, `calls:${pacificDay()}`, {});
+  return Object.fromEntries(Object.entries(QUOTA).map(([role, q]) =>
+    [role, q.perDay - q.models.reduce((n, m) => n + (used[m] || 0), 0)]));
+}
+
+// seconds to midnight in California, when the calls come back
+function untilReset() {
+  const now = Date.now(), pt = new Date(now - 8 * 3600e3);
+  return Math.ceil((Date.UTC(pt.getUTCFullYear(), pt.getUTCMonth(), pt.getUTCDate() + 1) + 8 * 3600e3 - now) / 1000) + 300;
+}
+
 async function gpuWhenReady(env, s, by) {
   const jobs = await batchJobs(env, s);
   const all = await Promise.all(jobs.map((j) => units(env, j)));
@@ -192,9 +222,24 @@ async function gpuWhenReady(env, s, by) {
     const last = jobs.map((j, i) => [j.id, all[i].research.finished || 0]).sort((a, b) => b[1] - a[1] || (b[0] > a[0] ? 1 : -1))[0][0];
     if (by !== last) return;
   }
-  const todo = jobs.filter((_, i) => !all[i].gpu || ["waiting", "failed"].includes(all[i].gpu.state) ||
+  let todo = jobs.filter((_, i) => !all[i].gpu || ["waiting", "failed"].includes(all[i].gpu.state) ||
     (all[i].gpu.state === "later" && Date.now() >= all[i].gpu.after));
   if (!todo.length) return;
+  // as many videos as today's calls are enough for; the rest wait for the calls to come back, not half way through
+  const left = await callsLeft(env);
+  const fit = Math.min(...Object.entries(GPU_CALLS).map(([role, n]) => Math.floor(left[role] / n)));
+  if (fit < todo.length) {
+    const wait = todo.slice(Math.max(fit, 0)), after = Date.now() + untilReset() * 1e3;
+    for (const job of wait) {
+      await put(env, unitKey(job, "gpu"), { ...((await units(env, job)).gpu || {}), state: "later", nonce: null, after,
+        why: `waits for AI Studio's calls (read ${left.read}, see ${left.see} left today)` });
+    }
+    await say(env, `${wait.map((j) => `Day ${j.day}`).join(", ")}: the GPU stage waits for tomorrow's AI Studio calls ` +
+      `(read ${left.read}, see ${left.see} left today; a video needs read ${GPU_CALLS.read}, see ${GPU_CALLS.see}). ` +
+      `It starts at ${new Date(after).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })} India time.`);
+    todo = todo.slice(0, Math.max(fit, 0));
+    if (!todo.length) return;
+  }
   const st = await pushGpu(env, todo);
   if (st === "pushed") await say(env, `GPU session for ${todo.map((j) => `day ${j.day}`).join(", ")}: voice, pictures and picture check, one video after another.`);
 }
@@ -452,6 +497,9 @@ async function claim(env, version) {
     if (["pushed", "waiting"].includes(g.state) || (g.state === "later" && Date.now() >= g.after)) todo.push([job, g]);
   }
   if (!todo.length) return { message: "No video waits for the GPU now." };
+  const left = await callsLeft(env);
+  todo.splice(Math.max(0, Math.min(...Object.entries(GPU_CALLS).map(([role, n]) => Math.floor(left[role] / n)))));
+  if (!todo.length) return { message: `Today's AI Studio calls are not enough for a video (read ${left.read}, see ${left.see} left).` };
   const good = await env.KV.get("good_version");
   if (good && version !== good) {
     const why = `The notebook ${DAILY} mounts code ${version}, the daily videos run ${good}: update its input ` +
@@ -854,7 +902,8 @@ async function command(text, env) {
     return say(env, `Automatic start: ${s.paused ? "paused" : "on"}, ${s.per_day} a day from ${s.start_hour}:00, ` +
       `next day ${s.next_day}\nToday: ${s.started[today(s)] || 0} started\n` +
       `Running: ${s.batch ? (await batchJobs(env, s)).map((j) => `day ${j.day}`).join(", ") || "finishing" : "nothing"}\n` +
-      `GPU this week: ${(s.gpu[week()] || 0).toFixed(1)} of ${GPU_WEEK} h, about ${gpuAverage(s).toFixed(1)} h a video` +
+      `GPU this week: ${(s.gpu[week()] || 0).toFixed(1)} of ${GPU_WEEK} h, about ${gpuAverage(s).toFixed(1)} h a video\n` +
+      `AI Studio calls left today: ${Object.entries(await callsLeft(env)).map(([r, n]) => `${r} ${n} of ${QUOTA[r].perDay}`).join(", ")}` +
       `\n\n${lines.join("\n") || "No videos yet."}`);
   }
   return say(env, HELP);

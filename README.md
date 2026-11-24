@@ -239,12 +239,18 @@ page on screen from a reference work, a university, a museum or a Sunni hadith s
 
 Faults are found where they are made, not after a whole film:
 
-- **The picture check** runs on the GPU stage's own T4s with an open vision model (`vision_local.py`, Qwen2.5-VL),
-  so it needs no API calls; the Gemini key only answers what that model could not. It looks for four faults a
-  viewer notices (something from a later age, writing, a deformed body, a scene unrelated to the line) and the code
-  decides. A redraw keeps out what was found: "folding chairs" goes into that picture's negative prompt.
+- **The picture check** asks Gemini five pictures a call (`PICTURE_BATCH`), each with its own line, for four faults
+  a viewer notices (something from a later age, writing, a deformed body, a scene unrelated to the line), and the
+  code decides. A picture the answer leaves out goes again on its own. An open model on the T4s
+  (`vision_local.py`) can take it over once one passes the canary (`VISION_LOCAL=1`); Qwen2.5-VL-3B did not. A redraw keeps out what was found: "folding chairs" goes into that picture's negative prompt.
 - **Every verdict is kept** per picture with its md5 in `picture_check_cache.json`, on Drive after every ten. A check
   that stops goes on from the picture it reached; only a redrawn picture is looked at again.
+- **AI Studio's free calls** are what runs out (a day: 500 for each Flash Lite, 20 for each Flash, 5 to 15 a
+  minute; tokens are far from their limit). Each job has models of its own (`writer.ROLES`: `LLM_WRITE` writes the
+  chapters, `LLM_READ` reads sources and plans the edit, `LLM_SEE` checks pictures), so one cannot spend another's
+  calls; every model is kept to its rate a minute; read and see calls ask for no thinking. The worker counts the
+  day's calls (`/status`) and starts a GPU stage only for as many videos as they are enough for; a job whose models
+  are spent waits for midnight in California instead of using another's.
 - **The plan gate**: before any chapter is rendered, the GPU stage works out every chapter's shots with nothing
   drawn and measures the twelve checks the edit plan decides. A film that would be held stops there with the checks
   it misses, instead of after an hour on five machines. Only loudness and movement wait for the finished film.

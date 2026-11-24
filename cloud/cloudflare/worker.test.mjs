@@ -463,3 +463,16 @@ test("the chat is kept both ways, and a kernel's message goes through the worker
   assert.equal(w.told.at(-1), "Day 7 (gpu): voice 1/6 took 10 min");
   assert.ok(log.length >= 3);
 });
+
+test("AI Studio calls are counted for the day, and a GPU stage they are not enough for waits for them", async () => {
+  const w = world({ perDay: 3, status: () => "running" });
+  await w.call("/usage", { "gemini-3.5-flash-lite": 330, "gemini-3.1-flash-lite": 40 });
+  await w.call("/usage", { "gemini-3.5-flash-lite": 10 });
+  await w.tick();
+  for (const r of w.pushes.filter((x) => x.stage === "research")) await w.report(r, "done");
+  const gpu = w.pushes.filter((x) => x.stage === "gpu");
+  assert.equal(gpu.length, 1);
+  assert.equal(gpu[0].jobs.length, 1, "160 see calls left: one video, not three");
+  assert.match(w.told.find((t) => t.includes("waits for tomorrow")), /Day 2, Day 3: .*see 160 left today/);
+  assert.match(await w.telegram("/status"), /AI Studio calls left today: read 460 of 500, see 160 of 500, write 80 of 80/);
+});

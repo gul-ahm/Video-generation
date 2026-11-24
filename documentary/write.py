@@ -102,7 +102,7 @@ def script(title, minutes, claims, sources, folder):
     if not f.exists():
         writer.say(f"planning {n} chapters")
         f.write_text(json.dumps(writer.llm(OUTLINE.format(minutes=minutes, title=title, n=n, ledger=lines(claims)),
-                                           as_json=True, temp=0.6), ensure_ascii=False, indent=1), encoding="utf-8")
+                                           as_json=True, temp=0.6, role="write"), ensure_ascii=False, indent=1), encoding="utf-8")
     plan = json.loads(f.read_text(encoding="utf-8"))
     chapters = plan["chapters"]
     words = minutes * SPOKEN // len(chapters)

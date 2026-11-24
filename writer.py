@@ -1,10 +1,11 @@
+import atexit
 import json
 import os
 import re
 import time
 from collections import Counter
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
 
 import requests
 from openai import (AuthenticationError, BadRequestError, NotFoundError, OpenAI,
@@ -130,10 +131,64 @@ Return JSON:
   "description": "2 short paragraphs that hook the viewer and use the main search keywords naturally",
   "tags": ["15 to 20 tags"]}}"""
 
-FALLBACKS = "gemini-3.1-flash-lite,gemini-3.5-flash-lite"
+# Each job has models of its own, so one job cannot spend the free calls another needs (AI Studio, 24 Nov: 3.1 and
+# 3.5 Flash Lite 500 calls a day each and 15 a minute, every Flash 20 a day and 5 a minute). Before, research fell
+# back to the Lite models once gemini-flash-latest ran out, and the picture check found nothing left.
+ROLES = {"write": ("LLM_WRITE", "gemini-flash-latest,gemini-3.6-flash,gemini-3-flash,gemini-2.5-flash"),  # chapters
+         "read": ("LLM_READ", "gemini-3.1-flash-lite"),  # sources, claims, edit plans, picture prompts
+         "see": ("LLM_SEE", "gemini-3.5-flash-lite")}  # the picture check
 _client = None
 _fails = Counter()
 _missing = set()
+_spent, _told = Counter(), Counter()  # calls a model was sent, and how many of them the worker has heard of
+_pace, _pace_lock = {}, Lock()
+
+
+def models_for(role):
+    name, default = ROLES[role]
+    return [m for m in dict.fromkeys(x.strip() for x in os.getenv(name, default).split(",")) if m and m not in _missing]
+
+
+def wait_turn(model):
+    """Calls spread to a model's rate a minute, over every thread: 27 a minute went to a Lite model with 15 allowed,
+    and each one over the rate is refused and asked again."""
+    rate = float(os.getenv("LLM_RPM_LITE", "12") if "lite" in model else os.getenv("LLM_RPM", "4"))
+    with _pace_lock:
+        slot = max(time.time(), _pace.get(model, 0) + 60 / rate)
+        _pace[model] = slot
+    time.sleep(max(0, slot - time.time()))
+
+
+def day_out(err):
+    return "PerDay" in str(err) or "exceeded your current quota" in str(err)
+
+
+def until_reset(errors):
+    """Seconds until the free calls come back: Google's own retryDelay, else midnight in California."""
+    resets = [int(x) for x in re.findall(r"retryDelay'?\W+(\d+)s", " ".join(map(str, errors)))]
+    if resets:
+        return min(resets)
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    return int((now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1) - now).total_seconds())
+
+
+def tell_usage():
+    """The calls each model was sent since the last report, to the worker's count of the day (WORKER_URL)."""
+    new = {m: n - _told[m] for m, n in _spent.items() if n > _told[m]}
+    if not new or not os.getenv("WORKER_URL"):
+        return
+    try:
+        import requests
+        requests.post(os.environ["WORKER_URL"] + "/usage", json=new, timeout=20,
+                      headers={"X-Studio-Secret": os.getenv("HOOK_SECRET", "")}).raise_for_status()
+        _told.update(new)
+    except Exception:
+        pass
+
+
+atexit.register(tell_usage)
 
 
 EDIT = """You are the editor of a narrated history documentary made like modern history explainer channels, where
@@ -259,29 +314,30 @@ def objects(text):
     return found[0] if len(found) == 1 else {"items": found}
 
 
-def llm(prompt, as_json=False, temp=0.8, fast=False):
-    """Models are tried in order: LLM_FAST first for small jobs, then LLM_MODEL, then LLM_FALLBACKS. A model that keeps
-    failing (503 overloaded, 429 free limit, no answer within LLM_TIMEOUT seconds) moves to the back and only gets
-    another chance after three good answers from others, so one stuck model cannot hold the whole video up."""
+def llm(prompt, as_json=False, temp=0.8, fast=False, role=None):
+    """One of the role's models answers (ROLES: write for chapters, read for the rest). A model that keeps failing
+    (503 overloaded, no answer within LLM_TIMEOUT seconds) moves to the back and only gets another chance after three
+    good answers from others. Read calls ask for no thinking: they pull facts out, and thinking only spent tokens.
+    When every model of the role is out of its calls for the day, the stage waits for them ("service busy: wait=")
+    instead of taking another job's models."""
     global _client
     if not os.getenv("LLM_API_KEY"):
         raise SystemExit("LLM_API_KEY is empty. Get a free key at aistudio.google.com (Get API key) and put it in .env.example")
+    role = role or ("read" if fast or as_json else "write")
     limit = float(os.getenv("LLM_TIMEOUT", "150"))
     _client = _client or OpenAI(base_url=os.getenv("LLM_BASE_URL"), api_key=os.getenv("LLM_API_KEY"),
                                 timeout=limit, max_retries=0)
-    names = ([os.getenv("LLM_FAST", "gemini-3.1-flash-lite")] if fast else []) + [os.getenv("LLM_MODEL", "")]
-    names += os.getenv("LLM_FALLBACKS", FALLBACKS).split(",")
     extra = {"response_format": {"type": "json_object"}} if as_json else {}
+    out = {}  # models with no calls left today
     for attempt in range(5):
-        models = [m for m in dict.fromkeys(n.strip() for n in names) if m and m not in _missing]
-        models.sort(key=lambda m: _fails[m])
+        models = sorted((m for m in models_for(role) if m not in out), key=lambda m: _fails[m])
         if not models:
-            raise SystemExit("none of the models in LLM_MODEL and LLM_FALLBACKS exist, check their names")
+            break
         for model in models:
             t0 = time.time()
             say(f"waiting for {model} ({len(prompt) // 1000}k characters sent)")
             try:
-                text = ask(model, prompt, temp, extra, limit)
+                text = ask(model, prompt, temp, {**extra, **(effort(model) if role == "read" else {})}, limit)
                 say(f"answer in {time.time() - t0:.0f}s, {len(text.split())} words")
                 for m in _fails:
                     _fails[m] = 0 if m == model else max(0, _fails[m] - 1 / 3)
@@ -292,14 +348,24 @@ def llm(prompt, as_json=False, temp=0.8, fast=False):
             except (BadRequestError, AuthenticationError, PermissionDeniedError) as e:
                 raise SystemExit(f"the LLM refused the request, check LLM_API_KEY: {str(e)[:300]}")
             except Exception as e:
+                if day_out(e):
+                    out[model] = str(e)
+                    say(f"{model} has no calls left today")
+                    continue
                 _fails[model] += 1
                 say(f"{model} failed after {time.time() - t0:.0f}s ({str(e)[:100] or 'no answer in time'})")
+        if all(m in out for m in models_for(role)):
+            break
         say(f"all models busy, waiting {30 * (attempt + 1)}s")
         time.sleep(30 * (attempt + 1))
+    if not models_for(role):
+        raise SystemExit(f"none of the {role} models ({ROLES[role][0]}) exist, check their names")
+    if out and all(m in out for m in models_for(role)):
+        raise SystemExit(f"service busy: wait={until_reset(out.values())} the {role} models ({', '.join(out)}) "
+                         f"have no free calls left today")
     raise SystemExit("the LLM kept failing, try again in a few minutes")
 
 
-_seen = []  # times of the last calls to a model that sees, shared by every thread
 # what the calls cost: tokens in, out and spent thinking, and calls given up at the time limit, which Google still
 # finishes and counts (the picture then went to the next model and was paid for twice)
 _usage = {"calls": 0, "in": 0, "out": 0, "think": 0, "late": 0}
@@ -320,27 +386,20 @@ _eyes = {}  # the models that answered a picture in this run, fastest first, and
 
 
 def eyes(refresh=False):
-    """The models that can look at a picture now. A fixed list in .env.example goes stale: gemini-2.5-flash-lite was
-    retired (404) and gemini-flash-latest stopped answering, and the test film's check failed on them. So the list is
-    asked from the API once a run: the .env.example models first, then every listed flash model, each tried with a
-    one pixel picture under a wall clock limit; those that answer are kept, fastest first."""
+    """The see models that can look at a picture now, each tried with a one pixel picture under a wall clock limit;
+    those that answer are kept, fastest first. Only the see role's own models (LLM_SEE): the check once took over
+    every Flash model on the key and left the others nothing."""
     import base64
     import io
     from PIL import Image
     if "at" in _eyes and not refresh:  # an empty list is an answer too: asking again at every picture spent calls
         return _eyes["live"]
-    named = [os.getenv(k, "") for k in ("LLM_VISION", "LLM_FAST", "LLM_MODEL")] + os.getenv("LLM_FALLBACKS", FALLBACKS).split(",")
-    try:
-        listed = sorted((m.id.split("/")[-1] for m in _client.models.list()), reverse=True)
-    except Exception:
-        listed = []
-    listed = [m for m in listed if re.fullmatch(r"gemini-(\d[\d.]*-)?flash(-lite)?(-latest)?", m)]
     buf = io.BytesIO()
     Image.new("RGB", (16, 16), (150, 110, 60)).save(buf, "JPEG")
     tiny = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
     timed, dropped = [], _eyes.setdefault("dropped", {})
     spent = _eyes.get("resets", {})  # out of calls for the day: asking again only spends a call to hear it
-    for model in [m for m in dict.fromkeys(x.strip() for x in named + listed) if m and m not in spent][:int(os.getenv("LLM_VISION_TRY", "8"))]:
+    for model in [m for m in models_for("see") if m not in spent]:
         t0 = time.time()
         try:
             ask(model, [{"type": "text", "text": 'Answer {"ok": true}'}, {"type": "image_url", "image_url": {"url": tiny}}],
@@ -348,10 +407,11 @@ def eyes(refresh=False):
             timed.append((time.time() - t0, model))
             dropped.pop(model, None)
         except Exception as err:
+            if isinstance(err, NotFoundError):
+                _missing.add(model)
             dropped[model] = (str(err)[:90] or "no answer in 30s").replace("\n", " ")
-            reset = re.search(r"retryDelay'?\W+(\d+)s", str(err)) if "PerDay" in str(err) else None
-            if reset:
-                _eyes.setdefault("resets", {})[model] = reset.group(1)
+            if day_out(err):
+                _eyes.setdefault("resets", {})[model] = until_reset([err])
     live = [m for _, m in sorted(timed)]
     if live != _eyes.get("live"):  # Telegram hears of a change, not of every look
         print(f"  vision models: {', '.join(live) or 'none'}" +
@@ -360,12 +420,13 @@ def eyes(refresh=False):
     return live
 
 
-def see(prompt, image):
-    """A question about a picture, answered as JSON by one of eyes(). Calls are spread to LLM_VISION_RPM a minute and
-    each gets LLM_VISION_LIMIT seconds of wall clock (a model that hangs cost 150 s a picture before). A busy model
-    (503, 429) is a normal state of a free API: the next model takes the call, and when all are busy the round is
-    repeated for about ten minutes, asking the API again which models answer. A model that is gone (404) or out of its
-    daily quota leaves the list. Only then the API counts as down, and the error names every model and its reason."""
+def see(parts):
+    """A question about pictures, answered as JSON by one of eyes(): parts are the words and the pictures (Paths) in
+    order, so one call can look at several. Each call gets LLM_VISION_LIMIT seconds of wall clock (a model that hangs
+    cost 150 s a picture before). A busy model (503, 429) is a normal state of a free API: the next model takes the
+    call, and when all are busy the round is repeated for about ten minutes, asking again which models answer. A model
+    that is gone (404) or out of its daily quota leaves the list. Only then the API counts as down, and the error names
+    every model and its reason."""
     import base64
     import io
     import threading
@@ -373,13 +434,15 @@ def see(prompt, image):
     global _client
     _client = _client or OpenAI(base_url=os.getenv("LLM_BASE_URL"), api_key=os.getenv("LLM_API_KEY"),
                                 timeout=float(os.getenv("LLM_TIMEOUT", "150")), max_retries=0)
-    img = Image.open(image).convert("RGB")
-    img.thumbnail((768, 768))
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=85)
-    url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-    msg = [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": url}}]
-    gap = 60 / float(os.getenv("LLM_VISION_RPM", "12"))
+
+    def picture(path):
+        img = Image.open(path).convert("RGB")
+        img.thumbnail((768, 768))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=85)
+        return {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()}}
+    msg = [picture(p) if isinstance(p, Path) else {"type": "text", "text": p} for p in parts]
+    image = next((p for p in parts if isinstance(p, Path)), Path("?"))
     limit = float(os.getenv("LLM_VISION_LIMIT", "60"))
     lock = see.__dict__.setdefault("lock", threading.Lock())
     why = {}
@@ -390,30 +453,21 @@ def see(prompt, image):
         with lock:  # after a busy round the API is asked again which models answer, by one thread for all
             models = eyes(refresh=i > 0 and time.time() - _eyes.get("at", 0) > 60)
         for model in list(models):
-            with lock:  # the next call waits its turn so the threads together stay under the rate
-                time.sleep(max(0, (_seen[-1] + gap - time.time()) if _seen else 0))
-                _seen[:] = [time.time()]
             try:
                 return objects(ask(model, msg, 0.1, {"response_format": {"type": "json_object"}, **effort(model)}, limit))
             except Exception as err:
                 why[model] = (str(err)[:120] or f"no answer in {limit:.0f}s").replace("\n", " ")
-                if isinstance(err, NotFoundError) or "PerDay" in str(err):  # gone, or no calls left today
+                if isinstance(err, NotFoundError) or day_out(err):  # gone, or no calls left today
                     with lock:
                         if model in _eyes.get("live", []):
                             _eyes["live"].remove(model)
                         _eyes.setdefault("dropped", {})[model] = why[model][:90]
-                        reset = re.search(r"retryDelay'?\W+(\d+)s", str(err))
-                        if reset:
-                            _eyes.setdefault("resets", {})[model] = reset.group(1)
-    # every model out of its free calls for the day: Google says when they come back, so the stage waits for that
-    # instead of booting a GPU machine every half hour to be refused again
-    resets = [int(x) for x in _eyes.get("resets", {}).values()]
+                        if day_out(err):
+                            _eyes.setdefault("resets", {})[model] = until_reset([err])
+    # every model out of its free calls for the day: the stage waits for them to come back instead of booting a GPU
+    # machine every half hour to be refused again
     spent = bool(why) and all("PerDay" in w or "exceeded your current quota" in w for w in why.values())
-    if spent and not resets:
-        from datetime import datetime, timedelta
-        from zoneinfo import ZoneInfo
-        now = datetime.now(ZoneInfo("America/Los_Angeles"))  # the free calls come back at midnight in California
-        resets = [int((now.replace(hour=0, minute=0, second=0) + timedelta(days=1) - now).total_seconds())]
+    resets = list(_eyes.get("resets", {}).values()) or ([until_reset(why.values())] if spent else [])
     wait = f" wait={min(resets)}" if resets and (spent or not _eyes.get("live")) else ""
     _eyes["down"] = (f"service busy:{wait} no model could look at " + Path(image).name + " for ten minutes; " +
                      "; ".join(f"{m}: {w}" for m, w in why.items()))[:700]
@@ -432,9 +486,13 @@ def ask(model, prompt, temp, extra, limit):
         except Exception as e:
             box["e"] = e
 
+    wait_turn(model)
     t = Thread(target=call, daemon=True)
     t.start()
     _usage["calls"] += 1
+    _spent[model] += 1
+    if sum(_spent.values()) % 20 == 0:
+        Thread(target=tell_usage, daemon=True).start()
     t.join(limit)
     if t.is_alive():
         _usage["late"] += 1

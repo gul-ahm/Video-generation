@@ -423,6 +423,19 @@ Most pictures have none of these. Light, weather, colours and missing details of
 Answer with JSON only: {{"later": false, "writing": false, "body": false, "unrelated": false, "what": ""}}
 Set a question to true only when you see it, and then name what you see in "what"."""
 FAULTS = ("later", "writing", "body", "unrelated")
+# several pictures in one call: the free calls a day are what runs out, not the tokens (AI Studio, 24 Nov: 505 of 500
+# calls but 92K of 250K tokens a minute), and one picture a call spent about 400 calls on a film
+FIT_MANY = """A documentary about {subject}. Below are {n} pictures, each after the line the narrator says while it is
+on screen and the prompt it was drawn from. For each picture answer four questions about what you can actually see:
+1. later: is there an object that did not exist in that time and place?
+2. writing: is there readable writing, letters or numbers?
+3. body: is a person or an animal clearly deformed?
+4. unrelated: does the picture show something else than what its narrator line says?
+Most pictures have none of these. Light, weather, colours and missing details of the prompt do not count.
+Set a question to true only when you see it in that picture, and then name what you see in "what".
+Answer with JSON only, one item per picture in order:
+{{"pictures": [{{"n": 1, "later": false, "writing": false, "body": false, "unrelated": false, "what": ""}}]}}"""
+PICTURE_BATCH = int(os.getenv("PICTURE_BATCH", "5"))
 
 
 def parse(answer):
@@ -486,23 +499,36 @@ def judge(todo, items, subject, cache_file):
             cache = {k: v for k, v in cache.items() if not v.get("by", "").startswith("Qwen") or k == test.name}
             cache_file.write_text(json.dumps(cache, ensure_ascii=False))
     cache = json.loads(cache_file.read_text()) if cache_file.exists() else {}
-    rest = [x for x in todo if not known(cache, x)]
     lock = threading.Lock()
 
-    def look(path):
-        answer = writer.see(question(path), path)
+    def look(group):
+        parts = [FIT_MANY.format(subject=subject, n=len(group))]
+        for k, path in enumerate(group, 1):
+            parts += [f'Picture {k}. The narrator says: "{items[path][1][:400]}". It was drawn from: "{items[path][0][:300]}"', path]
+        got = writer.see(parts) if len(group) > 1 else {"pictures": [writer.see([question(group[0]), group[0]])]}
+        answers = got.get("pictures") or got.get("items") or [] if isinstance(got, dict) else got
+        by_n = {int(a.get("n", k)): a for k, a in enumerate(answers, 1) if isinstance(a, dict) and str(a.get("n", k)).isdigit()}
         with lock:
-            cache[path.name] = {"md5": md5(path), "answer": json.dumps(answer), "by": "gemini"}
+            for k, path in enumerate(group, 1):
+                if k in by_n and parse(by_n[k]) is not None:
+                    cache[path.name] = {"md5": md5(path), "answer": json.dumps(by_n[k]), "by": f"gemini x{len(group)}"}
             cache_file.write_text(json.dumps(cache, ensure_ascii=False))
-    # the first picture the API cannot answer ends the check: before, the pool went on with every other picture,
-    # ten minutes each, and a GPU machine stayed busy for hours after the answer was already known
-    ex = ThreadPoolExecutor(3)
-    try:
-        list(ex.map(look, rest))
-    finally:
-        ex.shutdown(wait=False, cancel_futures=True)
-        if rest:
-            print(f"  {writer.usage()} for {len(rest)} pictures", flush=True)
+    # several pictures a call; one that the answer left out goes again on its own. The first group the API cannot
+    # answer ends the check: before, the pool went on with every other picture, ten minutes each.
+    looked = 0
+    for size in (PICTURE_BATCH, 1):
+        rest = [x for x in todo if not known(cache, x)]
+        looked += len(rest)
+        ex = ThreadPoolExecutor(3)
+        try:
+            list(ex.map(look, [rest[k:k + size] for k in range(0, len(rest), size)]))
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
+    if looked:
+        print(f"  {writer.usage()} for {len(todo)} pictures", flush=True)
+    missing = [x.name for x in todo if not known(cache, x)]
+    if missing:
+        raise SystemExit(f"picture check: no readable answer for {len(missing)} pictures ({', '.join(missing[:5])})")
     return cache
 
 

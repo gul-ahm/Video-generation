@@ -4,6 +4,7 @@ The pieces that broke in the cloud runs: the empty Drive upload, the quality gat
 what failed, the card browser that was left half started, the strict build.
 """
 import io
+import collections
 import json
 import os
 import sys
@@ -366,7 +367,7 @@ class Checks(unittest.TestCase):
             script = {"title": "t", "chapters": [{"shots": [("Wide shot", 10, "the line", [])]}]}
             with mock.patch.object(make, "pictures_of", lambda ch, plan: [("Wide shot", 0, [])]), \
                     mock.patch.object(make.visuals, "pending", lambda p, f, poses=None: ([pic], [], [])), \
-                    mock.patch.object(make.writer, "see", lambda q, path: next(answers)), \
+                    mock.patch.object(make.writer, "see", lambda parts: next(answers)), \
                     mock.patch.object(make.kaggle_gpu, "pictures", draw), \
                     mock.patch.dict(os.environ, {"DOC_SUBJECT": "Battle of al-Qadisiyyah, 636"}):
                 make.check_pictures(script, [{}], folder)
@@ -377,7 +378,7 @@ class Checks(unittest.TestCase):
             self.assertIn("firearms", redrawn[0][3])
             self.assertFalse((pic.parent / "s1.fg.png").exists())  # the old cut out went with the old picture
 
-    def checked(self, gpu_answers, gemini_answers, cache=None, pictures=3, sees_letters=True, local="1"):
+    def checked(self, gpu_answers, gemini_answers, cache=None, pictures=3, sees_letters=True, local="1", look=None):
         """check_pictures over a few pictures: the GPU model answers some (by writing the cache, as
         vision_local.py does), the Gemini key the rest. Returns what each looked at and the result."""
         import make
@@ -408,14 +409,17 @@ class Checks(unittest.TestCase):
             Path(cmd[3]).write_text(json.dumps(seen))
             return types.SimpleNamespace(returncode=0)
 
-        def see(q, path):
-            gemini.append(path.name)
-            return gemini_answers[path.name]
+        def see(parts):  # one call for a group of pictures, as the check sends them
+            group = [x for x in parts if isinstance(x, Path)]
+            gemini.extend(x.name for x in group)
+            if len(group) == 1 and "Picture 1." not in parts[0]:
+                return gemini_answers[group[0].name]
+            return {"pictures": [{**(make.parse(gemini_answers[x.name]) or {}), "n": k} for k, x in enumerate(group, 1)]}
         script = {"title": "t", "chapters": [{"shots": [(f"shot {k}", 10, f"line {k}", []) for k in range(pictures)]}]}
         with mock.patch.object(make, "pictures_of", lambda ch, plan: [(f"shot {k}", k, []) for k in range(pictures)]), \
                 mock.patch.object(make.visuals, "pending", lambda p, f, poses=None: (pics, [], [])), \
                 mock.patch.object(make.shutil, "which", return_value="/usr/bin/nvidia-smi"), \
-                mock.patch.object(make.subprocess, "run", run), mock.patch.object(make.writer, "see", see), \
+                mock.patch.object(make.subprocess, "run", run), mock.patch.object(make.writer, "see", look or see), \
                 mock.patch.object(make.kaggle_gpu, "pictures", lambda todo, moves: 0), \
                 mock.patch.dict(os.environ, {"PICTURE_REDRAW": "0", "VISION_LOCAL": local}):
             make.check_pictures(script, [{}], d)
@@ -441,6 +445,62 @@ class Checks(unittest.TestCase):
         gpu, gemini, got = self.checked({"s0.jpg": broken}, {"s0.jpg": {"later": False}, "s1.jpg": {"later": False},
                                                               "s2.jpg": {"later": False}})
         self.assertEqual((sorted(gemini), got["fit"]), (["s0.jpg", "s1.jpg", "s2.jpg"], 3))
+
+    def test_pictures_are_looked_at_five_a_call_and_one_left_out_goes_again_alone(self):
+        import make
+        ok = '{"later": false, "writing": false, "body": false, "unrelated": false}'
+        answers = {f"s{k}.jpg": ok for k in range(7)}
+        calls = []
+
+        def see(parts):
+            group = [x.name for x in parts if isinstance(x, Path)]
+            calls.append(group)
+            if len(group) == 1:
+                return make.parse(answers[group[0]])
+            return {"pictures": [{**make.parse(answers[n]), "n": k} for k, n in enumerate(group, 1) if n != "s3.jpg"]}
+        gpu, gemini, got = self.checked({}, answers, pictures=7, local="0", look=see)
+        self.assertEqual(sorted(calls, key=len, reverse=True),
+                         [["s0.jpg", "s1.jpg", "s2.jpg", "s3.jpg", "s4.jpg"], ["s5.jpg", "s6.jpg"], ["s3.jpg"]])
+        self.assertEqual(got["fit"], 7)
+
+    def test_each_job_keeps_to_its_own_models_and_waits_for_them_when_their_day_is_spent(self):
+        import writer
+        sent = []
+        spent = Exception("429 You exceeded your current quota GenerateRequestsPerDayPerProjectPerModel retryDelay': '5000s'")
+
+        def create(model, messages, temperature, **extra):
+            sent.append((model, extra.get("reasoning_effort")))
+            if model == "r1":
+                raise spent
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content='{"a": 1}'))])
+        client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+        env = {"LLM_API_KEY": "k", "LLM_READ": "r1,r2", "LLM_WRITE": "w1", "LLM_SEE": "s1"}
+        with mock.patch.object(writer, "_client", client), mock.patch.dict(os.environ, env), mock.patch("time.sleep"):
+            self.assertEqual(writer.llm("facts", as_json=True), {"a": 1})
+            self.assertEqual(sent[-1], ("r2", "low"), "the next read model, with no thinking")
+            writer.llm("a chapter")
+            self.assertEqual(sent[-1], ("w1", None), "a chapter is written with thinking")
+            with mock.patch.dict(os.environ, {"LLM_READ": "r1"}), self.assertRaises(SystemExit) as err:
+                writer.llm("facts", as_json=True)
+        self.assertTrue(str(err.exception).startswith("service busy: wait=5000 the read models (r1)"), err.exception)
+        self.assertNotIn("s1", [m for m, _ in sent], "never another job's model")
+
+    def test_calls_keep_to_the_rate_of_their_model_and_are_counted_for_the_worker(self):
+        import writer
+        with mock.patch.object(writer, "_pace", {}), mock.patch("time.time", return_value=1000.0), \
+                mock.patch("time.sleep") as slept, mock.patch.dict(os.environ, {"LLM_RPM_LITE": "12", "LLM_RPM": "4"}):
+            for _ in range(3):
+                writer.wait_turn("gemini-3.5-flash-lite")
+            writer.wait_turn("gemini-flash-latest")
+            writer.wait_turn("gemini-flash-latest")
+        self.assertEqual([round(c.args[0]) for c in slept.call_args_list], [0, 5, 10, 0, 15])
+        posted = []
+        with mock.patch.object(writer, "_spent", collections.Counter({"m": 7})), mock.patch.object(writer, "_told", collections.Counter({"m": 2})), \
+                mock.patch.dict(os.environ, {"WORKER_URL": "https://w", "HOOK_SECRET": "s"}), \
+                mock.patch("requests.post", side_effect=lambda url, json, **kw: posted.append((url, json)) or Answer(200)):
+            writer.tell_usage()
+            writer.tell_usage()
+        self.assertEqual(posted, [("https://w/usage", {"m": 5})], "only what the worker has not heard yet")
 
     def test_the_gpu_model_stays_off_unless_asked_for(self):
         ok = '{"later": false, "writing": false, "body": false, "unrelated": false}'
@@ -634,8 +694,7 @@ class Checks(unittest.TestCase):
         client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)),
                                        models=types.SimpleNamespace(list=lambda: [types.SimpleNamespace(id=f"models/{m}")
                                                                                   for m in listed]))
-        env = {"LLM_FAST": "a", "LLM_MODEL": "b", "LLM_FALLBACKS": "c", "LLM_VISION": "", "LLM_VISION_RPM": "6000",
-               **(env or {})}
+        env = {"LLM_SEE": ",".join(("a", "b", "c") + tuple(listed)), **(env or {})}
         d = tempfile.mkdtemp()
         from PIL import Image
         pic = Path(d) / "p.jpg"
@@ -643,7 +702,7 @@ class Checks(unittest.TestCase):
         with mock.patch.object(writer, "_client", client), mock.patch.object(writer, "_eyes", {}), \
                 mock.patch.dict(os.environ, env), mock.patch("time.sleep") as slept:
             try:
-                return writer.see("fits?", pic), calls, slept
+                return writer.see(["fits?", pic]), calls, slept
             except SystemExit as err:
                 return str(err), calls, slept
 
@@ -659,10 +718,9 @@ class Checks(unittest.TestCase):
             if model == "c":
                 raise Exception("503 UNAVAILABLE high demand")
             return '{"ok": true}' if probe else '{"fits": true}'
-        got, calls, _ = self.vision(answer, listed=("gemini-9-flash", "gemini-9-flash-tts", "imagen-4"))
+        got, calls, _ = self.vision(answer, listed=("gemini-9-flash",))
         self.assertEqual(got, {"fits": True})
         self.assertEqual([m for m, probe in calls if not probe], ["gemini-9-flash"])
-        self.assertNotIn("gemini-9-flash-tts", [m for m, _ in calls])
 
     def test_a_busy_round_is_waited_out_then_every_model_is_named(self):
         busy = {"n": 0}
@@ -713,7 +771,7 @@ class Checks(unittest.TestCase):
         with mock.patch.object(writer, "_eyes", {"down": "service busy: no model could look at x.jpg", "live": ["a"]}), \
                 mock.patch.object(writer, "_client", object()), mock.patch("time.sleep") as slept:
             with self.assertRaisesRegex(SystemExit, "service busy"):
-                writer.see("fits?", pic)
+                writer.see(["fits?", pic])
         slept.assert_not_called()
 
     def test_a_screenshot_covered_by_a_dialog_is_refused(self):
