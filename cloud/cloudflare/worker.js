@@ -122,7 +122,7 @@ function gpuAverage(s) {
 // made every chapter push all six again. Now nothing on Kaggle pushes, and every push happens here.
 // Each unit has its own KV key (unit:<job>:<unit>), so two chapters finishing at once never overwrite each other.
 
-const LIMIT = { research: 3, gpu: 3, part: 3, join: 2 };  // hours Kaggle gives each kernel
+const LIMIT = { research: 3, gpu: 3, part: 3, join: 2, upload: 1 };  // hours Kaggle gives each kernel
 const GRACE = 20 * 60e3;  // a kernel Kaggle reports finished but that never said so: counted as failed after this
 
 function slugOf(title) {
@@ -248,7 +248,9 @@ async function gpuWhenReady(env, s, by) {
 async function pushUnit(env, job, key, u = { tries: 0 }) {
   if (key === "gpu") return pushGpu(env, [job]).then(() => get(env, unitKey(job, "gpu"), u));
   const run = { ...job.run, stage: kindOf(key), nonce: crypto.randomUUID().slice(0, 8),
-                ...(key.startsWith("part") ? { part: Number(key.slice(4)) } : {}), chapters: job.chapters };
+                ...(key.startsWith("part") ? { part: Number(key.slice(4)) } : {}), chapters: job.chapters,
+                ...(key === "upload" ? { publish_at: job.publish_at, upload_title: job.best || job.title,
+                                         settings: await get(env, "settings", {}) } : {}) };
   try {
     const code = await kagglePush(env, run);
     u = { ...u, state: "pushed", nonce: run.nonce, at: Date.now(), waiting: null, code };
@@ -419,7 +421,15 @@ async function hook(e, env) {
   const job = await get(env, `job:${e.id}`, null);
   const key = e.stage === "part" ? `part${e.part}` : e.stage;
   const u = job && await get(env, unitKey(job, key), null);
-  if (!u || u.nonce !== e.nonce || job.status !== "running") return { ok: true, ignored: "not a run the worker is waiting for" };
+  const live = job && (key === "upload" ? job.status === "approved" : job.status === "running");
+  if (!u || u.nonce !== e.nonce || !live) return { ok: true, ignored: "not a run the worker is waiting for" };
+  if (key === "upload" && e.event === "failed") {  // the film is made and approved: the upload goes again, twice more
+    const tries = (u.tries || 0) + 1;
+    await put(env, unitKey(job, key), { ...u, state: tries < 3 ? "waiting" : "failed", tries, why: e.error });
+    await say(env, `Upload of ${job.best || job.title} failed (${tries} of 3): ${String(e.error).slice(0, 300)}` +
+      (tries < 3 ? "\nIt goes again within half an hour." : "\nNot tried again: upload it from Drive by hand."));
+    return { ok: true };
+  }
   if (e.event === "progress") {
     await say(env, `Day ${job.day} (${key}): ${String(e.line).slice(0, 200)}`);
     return { ok: true };
@@ -448,9 +458,22 @@ async function hook(e, env) {
     if (key === "gpu") await gpuWhenReady(env, s);
   }
   else if (e.event === "failed") await unitFailed(env, job, s, key, u, e.error || "no reason given", e.kind !== "quality");
+  if (e.event === "uploaded") {
+    await put(env, unitKey(job, key), { ...u, state: "done", finished: Date.now() });
+    Object.assign(job, { status: "scheduled", youtube: `https://youtu.be/${e.video}` });
+    await put(env, `job:${job.id}`, job);
+    const prefs = await get(env, "settings", {});
+    const studio = [prefs.age_restriction === "Yes" && "age restriction 18+", prefs.comments && prefs.comments !== "On" &&
+      `comments: ${prefs.comments}`].filter(Boolean);
+    await say(env, `On YouTube: ${job.best || job.title}\n${job.youtube}\n` +
+      (prefs.visibility === "Unlisted" ? "Unlisted now." : `Private until ${ny(job.publish_at)} New York (${ist(job.publish_at)} India), then public.`) +
+      (e.missed?.length ? `\nNot set: ${e.missed.join("; ")}` : "") +
+      (studio.length ? `\nSet in YouTube Studio (the API cannot): ${studio.join(", ")}` : ""));
+    return { ok: true };
+  }
   if (e.event === "ready") {
     await put(env, unitKey(job, key), { ...u, state: "done", finished: Date.now() });
-    Object.assign(job, { status: "ready", link: e.link, ready: new Date().toISOString() });
+    Object.assign(job, { status: "ready", link: e.link, best: e.best, ready: new Date().toISOString() });
     await put(env, `job:${job.id}`, job);
     await batchEnded(env, s);
     if (job.run.smoke) {  // every stage worked on this code: cloud.py smoke now gives it to the day's videos
@@ -589,6 +612,7 @@ async function watch(env, s) {
 }
 
 async function tick(env) {
+  await uploadsWaiting(env);
   const s = await state(env);
   if (s.batch) {
     const before = JSON.stringify(s);
@@ -624,7 +648,8 @@ async function kagglePush(env, run) {
   // the day's videos run the code the last smoke film passed (history-studio-code-good); a test or smoke film runs
   // what was synced last (history-studio-code), so a change reaches the daily videos only after a whole film
   const good = await env.KV.get("good_version");
-  const latest = run.day === 0 || !good;
+  // the upload is no stage a smoke film goes through, so it runs the newest code (its own tests cover it)
+  const latest = run.day === 0 || !good || run.stage === "upload";
   run = { ...run, code: latest ? await env.KV.get("code_version") : good };  // the kernel stops on other code
   const me = env.KAGGLE_USERNAME;
   const name = kernelName(run);
@@ -798,8 +823,10 @@ async function button(q, env) {
     await put(env, "state", s);
     await Promise.all([done("Approved"), unbutton()]);
     const missing = SETTINGS.filter(([k]) => !(k in prefs)).length;
-    return say(env, `Approved: ${job.title || a}\nPublish: ${ny(slot)} New York (${ist(slot)} India)` +
-      (missing ? `\n\n${missing} upload settings are not chosen yet, send /settings` : ""));
+    await say(env, `Approved: ${job.best || job.title || a}\nPublish: ${ny(slot)} New York (${ist(slot)} India)\n` +
+      (missing ? `${missing} upload settings are not chosen yet: send /settings, the upload starts once they are.`
+        : "Uploading to YouTube now, scheduled for that time."));
+    return missing ? null : pushUnit(env, job, "upload");
   }
   if (what === "no") {
     const job = await get(env, `job:${a}`, { id: a, feedback: [] });
@@ -819,6 +846,17 @@ async function button(q, env) {
   }
 }
 
+// approved films whose upload has not gone: after the settings are chosen, and at every tick (a refused push)
+async function uploadsWaiting(env) {
+  const prefs = await get(env, "settings", {});
+  if (SETTINGS.some(([k]) => !(k in prefs))) return;
+  for (const { name } of (await env.KV.list({ prefix: "job:" })).keys) {
+    const job = await get(env, name, null);
+    const u = job && job.status === "approved" && await get(env, unitKey(job, "upload"), null);
+    if (job?.status === "approved" && (!u || u.state === "waiting")) await pushUnit(env, job, "upload", u || undefined);
+  }
+}
+
 async function feedback(msg, text, id, env) {
   const job = await get(env, `job:${id}`, { id, feedback: [] });
   const photo = msg.photo ? msg.photo[msg.photo.length - 1].file_id : msg.document?.mime_type?.startsWith("image/")
@@ -834,7 +872,8 @@ async function askNext(env, prefs) {
   const next = SETTINGS.find(([k]) => !(k in prefs));
   if (!next) {
     const lines = SETTINGS.map(([k, label]) => `${label}: ${prefs[k]}`);
-    return say(env, `Upload settings saved:\n${[...lines, ...FIXED].join("\n")}`);
+    await say(env, `Upload settings saved:\n${[...lines, ...FIXED].join("\n")}`);
+    return uploadsWaiting(env);
   }
   const [key, label, options] = next;
   return say(env, `${label}?`, options.map((o, i) => [{ text: o, callback_data: `set:${key}:${i}` }]));

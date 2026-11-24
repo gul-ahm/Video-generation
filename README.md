@@ -323,10 +323,15 @@ Real ESRGAN binary, and everything in `output/`. Bring your own voice, music and
 - **Faces in the realistic look.** AI photographs sometimes get faces and hands wrong. Real people are only shown from
   behind or far away, and their real photos appear only inside article screenshots.
 - **Kaggle queues** can still delay a video by an hour or more on busy days.
-- **YouTube's API** keeps uploads from unverified projects private until the project passes an audit, so automatic
-  publishing has to wait for that.
+- **YouTube's API** sets neither age restriction nor the comments setting: the Telegram message after an upload
+  says when those need a tap in YouTube Studio. A channel without phone verification cannot set thumbnails.
 - **Real people in the news.** The script keeps allegations as allegations, but such videos still need a human read
   before upload. Mark AI pictures as altered or synthetic content when you upload.
 
-Next on the list: fixing a rejected video from the reason and screenshots sent on Telegram, and the YouTube upload
-with its publish slot.
+**Upload.** Yes on Telegram gives the film the next publish slot and an upload stage on Kaggle
+(`cloud/youtube.py`, a CPU kernel): the film, its YouTube pack, thumbnail and subtitles from Drive to YouTube by a
+resumable upload, private until the slot (`publishAt`), then public; title, description, hashtags, tags and captions
+from the film, the rest from `/settings`. Uploads cost 1 unit of their own daily bucket of 100. A failed upload goes
+again at the next tick, three times at most; YouTube's link comes back on Telegram.
+
+Next on the list: fixing a rejected video from the reason and screenshots sent on Telegram.

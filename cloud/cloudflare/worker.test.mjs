@@ -43,7 +43,10 @@ function world({ refuse = () => false, status = (url) => (url.includes("studio-g
   const telegram = (text) => worker.fetch(new Request("https://w/telegram", {
     method: "POST", headers: { "X-Telegram-Bot-Api-Secret-Token": "s" },
     body: JSON.stringify({ message: { chat: { id: 7 }, message_id: 1, text } }) }), env).then(() => told.at(-1));
-  return { kv, told, pushes, deleted, env, call, last, report, state, telegram, tick: () => call("/tick") };
+  const button = (data) => worker.fetch(new Request("https://w/telegram", {
+    method: "POST", headers: { "X-Telegram-Bot-Api-Secret-Token": "s" },
+    body: JSON.stringify({ callback_query: { id: "q", data, message: { chat: { id: 7 }, message_id: 2 } } }) }), env);
+  return { kv, told, pushes, deleted, env, call, last, report, state, telegram, button, tick: () => call("/tick") };
 }
 
 async function toParts(w, chapters = 3) {
@@ -475,4 +478,30 @@ test("AI Studio calls are counted for the day, and a GPU stage they are not enou
   assert.equal(gpu[0].jobs.length, 1, "160 see calls left: one video, not three");
   assert.match(w.told.find((t) => t.includes("waits for tomorrow")), /Day 2, Day 3: .*see 160 left today/);
   assert.match(await w.telegram("/status"), /AI Studio calls left today: read 460 of 500, see 160 of 500, write 80 of 80/);
+});
+
+test("Yes uploads the film for its slot with the settings; YouTube's answer goes to Telegram", async () => {
+  const w = world({ status: () => "running" });
+  await w.call("/start", { day: 3, title: "Day three", subject: "x", minutes: 20 });
+  const job = JSON.parse(w.kv.get(`job:${w.last("research").id}`));
+  w.kv.set(`job:${job.id}`, JSON.stringify({ ...job, status: "ready", best: "The Best Title" }));
+  await w.telegram("/settings reset");
+  await w.button(`yes:${job.id}`);
+  assert.match(w.told.at(-1), /upload settings are not chosen yet/);
+  assert.equal(w.pushes.filter((p) => p.stage === "upload").length, 0, "not before the settings");
+  const SET = [["visibility", 0], ["category", 0], ["made_for_kids", 0], ["age_restriction", 1], ["language", 0],
+    ["license", 0], ["comments", 0], ["notify_subscribers", 0], ["embedding", 0]];
+  for (const [k, i] of SET) await w.button(`set:${k}:${i}`);
+  const up = w.last("upload");
+  assert.equal(up.upload_title, "The Best Title");
+  assert.equal(up.settings.visibility, "Public");
+  assert.ok(up.publish_at);
+  await w.report(up, "failed", { error: "YouTube refused the upload: 401" });
+  assert.match(w.told.at(-1), /Upload of The Best Title failed \(1 of 3\)/);
+  await w.tick();
+  const again = w.last("upload");
+  assert.notEqual(again.nonce, up.nonce, "pushed again at the tick");
+  await w.report(again, "uploaded", { video: "abc123", missed: ["thumbnail (403 forbidden)"] });
+  assert.match(w.told.at(-1), /On YouTube: The Best Title\nhttps:\/\/youtu.be\/abc123\nPrivate until .* then public\.\nNot set: thumbnail \(403 forbidden\)\nSet in YouTube Studio \(the API cannot\): age restriction 18\+/);
+  assert.equal(JSON.parse(w.kv.get(`job:${job.id}`)).status, "scheduled");
 });

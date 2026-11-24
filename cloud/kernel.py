@@ -62,6 +62,8 @@ def unpack():
 
 
 def install(stage):
+    if stage == "upload":  # Drive and YouTube only: nothing to install
+        return
     pip = [sys.executable, "-m", "pip", "install", "-q"]
     # the Kaggle image has an older kaggle tool without "benchmarks ... --wait", so the director fell back to Gemini;
     # this is the version the Mac runs
@@ -293,6 +295,11 @@ def report(err):
 
 def video(stage):
     """This stage for the video in RUN."""
+    if stage == "upload":  # the approved film to YouTube, for its publish slot
+        import youtube
+        vid, missed = youtube.upload(HOME / "upload", RUN["slug"], RUN.get("upload_title") or RUN["title"],
+                                     RUN["publish_at"], RUN.get("settings") or {})
+        return hook("uploaded", video=vid, missed=missed)
     if stage != "research":
         state("get")
     if stage in ("gpu", "check"):

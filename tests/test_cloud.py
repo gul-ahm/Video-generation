@@ -900,3 +900,43 @@ class Cards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Upload(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(ROOT / "cloud"))
+        import youtube
+        self.yt = youtube
+
+    def test_the_settings_become_the_videos_snippet_and_status(self):
+        pack = {"description": "d" * 6000, "tags": ["Battle of Hira", "Khalid ibn al-Walid"] + [f"tag{k}" for k in range(80)]}
+        got = self.yt.body(pack, "T" * 120, "2026-11-26T16:00:00Z", {"visibility": "Public", "category": "Education",
+                                                                     "made_for_kids": "No", "language": "English"})
+        self.assertEqual(len(got["snippet"]["title"]), 100)
+        self.assertEqual(len(got["snippet"]["description"]), 5000)
+        self.assertLessEqual(sum(len(t) + (2 if " " in t else 0) + 1 for t in got["snippet"]["tags"]), 500)
+        self.assertEqual(got["snippet"]["categoryId"], "27")
+        self.assertEqual(got["status"], {"privacyStatus": "private", "publishAt": "2026-11-26T16:00:00Z",
+                                         "selfDeclaredMadeForKids": False, "license": "youtube", "embeddable": True,
+                                         "containsSyntheticMedia": False})
+        unlisted = self.yt.body({}, "T", "2026-11-26T16:00:00Z", {"visibility": "Unlisted"})["status"]
+        self.assertEqual((unlisted["privacyStatus"], "publishAt" in unlisted), ("unlisted", False))
+
+    def test_a_dropped_upload_goes_on_from_the_last_byte_youtube_has(self):
+        video = Path(tempfile.mkdtemp()) / "f.mp4"
+        video.write_bytes(b"x" * 100)
+        puts = []
+
+        def put(url, data=None, headers=None, timeout=None):
+            puts.append(headers["Content-Range"])
+            if len(puts) == 1:
+                import requests
+                raise requests.ConnectionError("reset")
+            if headers["Content-Range"] == "bytes */100":
+                return types.SimpleNamespace(status_code=308, headers={"Range": "bytes=0-39"})
+            return types.SimpleNamespace(status_code=200, headers={}, json=lambda: {"id": "vid1"})
+        start = types.SimpleNamespace(ok=True, headers={"Location": "https://up/1"})
+        with mock.patch.object(self.yt.drive, "token", return_value="t"), mock.patch("requests.post", return_value=start), \
+                mock.patch("requests.put", side_effect=put), mock.patch("time.sleep"):
+            self.assertEqual(self.yt.send(video, {"snippet": {}}, True), "vid1")
+        self.assertEqual(puts, ["bytes 0-99/100", "bytes */100", "bytes 40-99/100"])
