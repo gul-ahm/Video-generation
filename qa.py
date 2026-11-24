@@ -83,7 +83,7 @@ def timing(chapters):
             extra = s[3] if len(s) > 3 else {}
             if "card_t" in extra:
                 off.append(abs(t - extra["card_t"]))
-            if extra.get("caption") and "_t" in extra["caption"]:
+            if extra.get("caption") and "_t" in extra["caption"] and not extra["caption"].get("held"):
                 off.append(abs(t + extra["caption"].get("at", 0) - extra["caption"]["_t"]))
             t += s[1]
     return float(np.mean(off)) if off else 0.0

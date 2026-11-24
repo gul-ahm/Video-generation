@@ -181,7 +181,7 @@ FX_SOUND = {"typewriter": [(0.25, "tick")], "number": [(0.25, "pop")], "marker":
 _kinetic = {"n": 0}
 
 
-def kinetic(e, folder, want=None):
+def kinetic(e, folder, want=None, seconds=None):
     """A caption as a HyperFrames kinetic caption (fx.py): a date types itself out, a number pops in digit by digit,
     a big line slams in, and every other plain caption gets a marker circle on its key word. Names stay lower thirds.
     want: the director's choice (typewriter, number, slam, marker or plain); it wins when the caption can carry it.
@@ -221,14 +221,21 @@ def kinetic(e, folder, want=None):
         said = str(e.get("word", "")).strip(".,;:!?")
         word = said if said.lower() in title.lower() and len(said) > 3 else max(words, key=len, default="")
         kind, values = "marker", {"text": title, "word": word}
+    if seconds:  # a caption held over several shots: its exit comes when it leaves the screen
+        values["seconds"] = round(seconds, 1)
     out = folder / "fx" / f"{kind}_{fx.key(kind, values)}"
     got = fx.frames(kind, values, out)
     return {**e, "kind": "hfo", "fx": kind, "card": f"hyperframes {kind}", "frames": str(got), "step": 1} if got else None
 
 
-def put_caption(shots, t, e):
+CAPTION_HOLD = float(os.getenv("CAPTION_HOLD", "7"))  # seconds a caption may stay on after its word
+
+
+def put_caption(shots, t, e, end=None):
     """A caption or title on the picture shot that is showing at t, appearing on the word. If the shot ends within
-    1.8 s, the cut moves a little later so the caption can be read; "_t" keeps the word time for later."""
+    1.8 s, the cut moves a little later so the caption can be read; "_t" keeps the word time for later.
+    A caption stays on over the next picture shots of its sentence (until end, CAPTION_HOLD at most): on one shot
+    of 3.7 s it was on screen a third of the time although half the sentences had one (day 6, held at 33.8%)."""
     pos = 0.0
     for j, s in enumerate(shots):
         if pos + s[1] > t:
@@ -248,7 +255,21 @@ def put_caption(shots, t, e):
     if short > 0 and nxt and nxt[0].suffix != ".json" and nxt[1] - short >= 1.2:
         s[1] += short
         nxt[1] -= short
-    s[3]["caption"] = {**e, "_t": t}
+    s[3]["caption"] = placed = {**e, "_t": t}
+    out = [placed]
+    if end is None or e.get("kind") != "caption":
+        return out
+    pos, stop = pos + s[1], min(end, t + CAPTION_HOLD)
+    for nxt in shots[j + 1:]:  # held: it goes on from where it was, without a second entrance or an exit at the cut
+        if pos >= stop - 1.0 or pos + nxt[1] > stop + 1.5 or len(nxt) < 4 or nxt[0].suffix == ".json" or "caption" in nxt[3]:
+            break
+        nxt[3]["caption"] = {**e, "_t": t, "held": True, "from": round(pos - t, 3)}
+        out.append(nxt[3]["caption"])
+        pos += nxt[1]
+    if len(out) > 1:
+        for c in out:
+            c["dur"] = round(pos - t, 3)  # seconds on screen from its word: the exit comes at the end of the last shot
+    return out
 
 
 def lit(ch, plan):
@@ -601,9 +622,12 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
                 shots = cut_in(shots, t, e, min(3.5, dur - t))
                 continue
         if e.get("kind") in OVERLAYS:
-            if e["kind"] in ("caption", "title"):
-                e = kinetic(e, folder, choice(word).get("caption_fx")) or (tier2(e, folder) if e["kind"] == "caption" else e)
-            put_caption(shots, t, e)
+            placed = put_caption(shots, t, e, next((at(w) for w, _ in plan.get("lines", []) if at(w) > t + 0.5), dur))
+            if placed and e["kind"] in ("caption", "title"):  # drawn for as long as it stays on
+                got = kinetic(e, folder, choice(word).get("caption_fx"), placed[0].get("dur")) or (
+                    tier2(e, folder) if e["kind"] == "caption" else e)
+                for c in placed:
+                    c.update(got)
 
     sections, beats = sound.plan([(at(w), m) for w, m in plan.get("moods", [])], dur, ch["title"])
     edges = list(accumulate(x[1] for x in shots))[:-1]
@@ -619,7 +643,7 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
     t = 0.0
     for shot in shots:  # a caption keeps its word after the cuts moved: "at" is seconds into the shot
         cap = shot[3].get("caption") if len(shot) > 3 else None
-        if cap:
+        if cap and not cap.get("held"):
             cap["at"] = round(min(max(0.0, cap["_t"] - t), max(0.0, shot[1] - 1.2)), 3)
         t += shot[1]
 
@@ -628,7 +652,7 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
         extra = shot[3] if len(shot) > 3 else {}
         if extra.get("intro"):
             events.append((t, "sparkle"))
-        if extra.get("caption"):
+        if extra.get("caption") and not extra["caption"].get("held"):
             c = t + extra["caption"].get("at", 0)
             kind = extra["caption"].get("kind")
             fx_kind = extra["caption"].get("fx")

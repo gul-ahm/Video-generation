@@ -97,6 +97,9 @@ def glide(pictures, frames, start, end, extra=None):
     tier2 = cap and cap.get("kind") == "hfo"  # a HyperFrames lower third or label, frames drawn by hf.py
     layer = cards.overlay(cap, w, h) if cap and not tier2 else None
     shown = round(cap.get("at", 0) * FPS) if cap else 0  # the caption appears on its word
+    # a caption held over several shots goes on from where the shot before left it ("from") and leaves at "dur"
+    skip = round(cap.get("from", 0) * FPS) if cap else 0
+    span = round(cap["dur"] * FPS) if cap and cap.get("dur") else None
     air = motion.Air(extra["air"], w, h, zlib.crc32(str(pictures[0]).encode()) % 1000) if extra.get("air") else None
     for n in range(frames):
         t = n / max(frames - 1, 1)
@@ -117,11 +120,11 @@ def glide(pictures, frames, start, end, extra=None):
         if extra.get("intro") == "sparkle":
             motion.sparkle(img, n / FPS)
         if tier2 and n >= shown:
-            top = hf.frame(cap["frames"], n - shown, (w, h), cap.get("step", 2))
+            top = hf.frame(cap["frames"], n - shown + skip, (w, h), cap.get("step", 2))
             img.paste(top, (0, 0), top)
             yield img
         else:
-            yield cards.draw_overlay(img, *layer, n - shown, frames - shown) if layer and n >= shown else img
+            yield cards.draw_overlay(img, *layer, n - shown + skip, span or frames - shown) if layer and n >= shown else img
 
 
 def captions(words, max_words):

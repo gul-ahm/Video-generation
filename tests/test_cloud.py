@@ -533,6 +533,21 @@ class Checks(unittest.TestCase):
         self.assertTrue(all(isinstance(x, Path) and not x.exists() for x in got))
         local.assert_not_called(), fetch.assert_not_called()
 
+    def test_a_caption_stays_on_over_the_rest_of_its_sentence(self):
+        import make
+        shots = [[Path(f"p{k}.jpg"), 3.0, 0.0, {}] for k in range(5)]
+        placed = make.put_caption(shots, 1.0, {"kind": "caption", "title": "633"}, end=8.0)
+        caps = [s[3].get("caption") for s in shots]
+        self.assertEqual([bool(c) for c in caps], [True, True, True, False, False], "until its sentence ends")
+        self.assertEqual(placed, caps[:3])
+        self.assertEqual([(c.get("held"), c.get("from"), c["dur"]) for c in caps[:3]], [(None, None, 8.0), (True, 2.0, 8.0), (True, 5.0, 8.0)])
+        import qa
+        caps[0]["at"] = 1.0  # timeline sets it once the cuts are final
+        self.assertEqual(qa.timing([(shots, None)]), 0.0, "a held caption is not a second landing")
+        title = [[Path(f"p{k}.jpg"), 3.0, 0.0, {}] for k in range(3)]
+        make.put_caption(title, 1.0, {"kind": "title", "title": "Night Raid"}, end=8.0)
+        self.assertEqual([bool(s[3].get("caption")) for s in title], [True, False, False], "a title lands once")
+
     def test_an_article_shows_briefly_then_the_beat_has_its_own_pictures(self):
         import make
         with tempfile.TemporaryDirectory() as d:
