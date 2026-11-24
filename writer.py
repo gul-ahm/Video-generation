@@ -300,6 +300,22 @@ def llm(prompt, as_json=False, temp=0.8, fast=False):
 
 
 _seen = []  # times of the last calls to a model that sees, shared by every thread
+# what the calls cost: tokens in, out and spent thinking, and calls given up at the time limit, which Google still
+# finishes and counts (the picture then went to the next model and was paid for twice)
+_usage = {"calls": 0, "in": 0, "out": 0, "think": 0, "late": 0}
+
+
+def effort(model):
+    """A yes or no look at a picture needs no thinking. Without this every check call thought first, by default:
+    thousands of output tokens a picture and answers slow enough to hit the time limit. 2.5 models can stop
+    thinking ("none"); 3 models cannot, "low" is their least (the API refuses "minimal")."""
+    return {"reasoning_effort": "none" if "-2.5-" in model else "low"}
+
+
+def usage():
+    u = _usage
+    return (f"gemini: {u['calls']} calls, {u['in'] / 1e3:.0f}k tokens in, {u['out'] / 1e3:.0f}k out "
+            f"({u['think'] / 1e3:.0f}k of it thinking), {u['late']} given up at the time limit")
 _eyes = {}  # the models that answered a picture in this run, fastest first, and why the others were dropped
 
 
@@ -323,11 +339,12 @@ def eyes(refresh=False):
     Image.new("RGB", (16, 16), (150, 110, 60)).save(buf, "JPEG")
     tiny = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
     timed, dropped = [], _eyes.setdefault("dropped", {})
-    for model in [m for m in dict.fromkeys(x.strip() for x in named + listed) if m][:int(os.getenv("LLM_VISION_TRY", "8"))]:
+    spent = _eyes.get("resets", {})  # out of calls for the day: asking again only spends a call to hear it
+    for model in [m for m in dict.fromkeys(x.strip() for x in named + listed) if m and m not in spent][:int(os.getenv("LLM_VISION_TRY", "8"))]:
         t0 = time.time()
         try:
             ask(model, [{"type": "text", "text": 'Answer {"ok": true}'}, {"type": "image_url", "image_url": {"url": tiny}}],
-                0, {"response_format": {"type": "json_object"}}, 30)
+                0, {"response_format": {"type": "json_object"}, **effort(model)}, 30)
             timed.append((time.time() - t0, model))
             dropped.pop(model, None)
         except Exception as err:
@@ -377,7 +394,7 @@ def see(prompt, image):
                 time.sleep(max(0, (_seen[-1] + gap - time.time()) if _seen else 0))
                 _seen[:] = [time.time()]
             try:
-                return objects(ask(model, msg, 0.1, {"response_format": {"type": "json_object"}}, limit))
+                return objects(ask(model, msg, 0.1, {"response_format": {"type": "json_object"}, **effort(model)}, limit))
             except Exception as err:
                 why[model] = (str(err)[:120] or f"no answer in {limit:.0f}s").replace("\n", " ")
                 if isinstance(err, NotFoundError) or "PerDay" in str(err):  # gone, or no calls left today
@@ -417,11 +434,19 @@ def ask(model, prompt, temp, extra, limit):
 
     t = Thread(target=call, daemon=True)
     t.start()
+    _usage["calls"] += 1
     t.join(limit)
     if t.is_alive():
+        _usage["late"] += 1
         raise TimeoutError()
     if "e" in box:
         raise box["e"]
+    u = getattr(box["r"], "usage", None)
+    if u:
+        think = getattr(u.completion_tokens_details, "reasoning_tokens", 0) if u.completion_tokens_details else 0
+        _usage["in"] += u.prompt_tokens or 0
+        _usage["out"] += (u.total_tokens or 0) - (u.prompt_tokens or 0)  # the answer and the thinking
+        _usage["think"] += think or 0
     return box["r"].choices[0].message.content.strip()
 
 

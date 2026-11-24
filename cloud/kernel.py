@@ -185,8 +185,8 @@ def work(stage, **extra):
 
 
 # the lines of a build that say how far it is
-SAY = r"took|done|drawn|fit their line|^screenshots:|^script:|^vision|before rendering"
-STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "pictures: ", "vision models:", "plan: ", "render ", "done:")
+SAY = r"took|done|drawn|fit their line|^screenshots:|^script:|^vision|^gemini:|before rendering"
+STEPS = ("screenshots:", "script:", "voice ", "kaggle: ", "pictures: ", "vision models:", "gemini: ", "plan: ", "render ", "done:")
 
 CHECKS = 15  # qa.py's checks; a film is offered for approval only when every one passes
 

@@ -9,6 +9,7 @@ import os
 import sys
 import tarfile
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -371,7 +372,7 @@ class Checks(unittest.TestCase):
             self.assertIn("firearms", redrawn[0][3])
             self.assertFalse((pic.parent / "s1.fg.png").exists())  # the old cut out went with the old picture
 
-    def checked(self, gpu_answers, gemini_answers, cache=None, pictures=3, sees_letters=True):
+    def checked(self, gpu_answers, gemini_answers, cache=None, pictures=3, sees_letters=True, local="1"):
         """check_pictures over a few pictures: the GPU model answers some (by writing the cache, as
         vision_local.py does), the Gemini key the rest. Returns what each looked at and the result."""
         import make
@@ -411,7 +412,7 @@ class Checks(unittest.TestCase):
                 mock.patch.object(make.shutil, "which", return_value="/usr/bin/nvidia-smi"), \
                 mock.patch.object(make.subprocess, "run", run), mock.patch.object(make.writer, "see", see), \
                 mock.patch.object(make.kaggle_gpu, "pictures", lambda todo, moves: 0), \
-                mock.patch.dict(os.environ, {"PICTURE_REDRAW": "0"}):
+                mock.patch.dict(os.environ, {"PICTURE_REDRAW": "0", "VISION_LOCAL": local}):
             make.check_pictures(script, [{}], d)
         return gpu, gemini, json.loads((d / "picture_check.json").read_text())
 
@@ -435,6 +436,44 @@ class Checks(unittest.TestCase):
         gpu, gemini, got = self.checked({"s0.jpg": broken}, {"s0.jpg": {"later": False}, "s1.jpg": {"later": False},
                                                               "s2.jpg": {"later": False}})
         self.assertEqual((sorted(gemini), got["fit"]), (["s0.jpg", "s1.jpg", "s2.jpg"], 3))
+
+    def test_the_gpu_model_stays_off_unless_asked_for(self):
+        ok = '{"later": false, "writing": false, "body": false, "unrelated": false}'
+        gpu, gemini, got = self.checked({}, {f"s{k}.jpg": ok for k in range(3)}, local="0")
+        self.assertEqual(gpu, [])
+        self.assertEqual(sorted(gemini), ["s0.jpg", "s1.jpg", "s2.jpg"])
+
+    def test_a_look_asks_for_no_thinking_and_its_cost_is_counted(self):
+        import writer
+        self.assertEqual(writer.effort("gemini-2.5-flash-lite"), {"reasoning_effort": "none"})
+        self.assertEqual(writer.effort("gemini-3.5-flash-lite"), {"reasoning_effort": "low"})
+        self.assertEqual(writer.effort("gemini-flash-latest"), {"reasoning_effort": "low"})
+        sent = []
+
+        def create(model, messages, temperature, **extra):
+            sent.append(extra)
+            if model == "slow":
+                time.sleep(0.3)
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="{}"))],
+                                         usage=types.SimpleNamespace(prompt_tokens=300, completion_tokens=20, total_tokens=420,
+                                                                     completion_tokens_details=types.SimpleNamespace(reasoning_tokens=100)))
+        client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+        with mock.patch.object(writer, "_client", client), \
+                mock.patch.object(writer, "_usage", {"calls": 0, "in": 0, "out": 0, "think": 0, "late": 0}):
+            writer.ask("gemini-3.5-flash-lite", "x", 0, writer.effort("gemini-3.5-flash-lite"), 5)
+            with self.assertRaises(TimeoutError):
+                writer.ask("slow", "x", 0, {}, 0.05)
+            self.assertEqual(sent[0]["reasoning_effort"], "low")
+            self.assertEqual(writer.usage(), "gemini: 2 calls, 0k tokens in, 0k out (0k of it thinking), 1 given up at the time limit")
+            self.assertEqual(writer._usage, {"calls": 2, "in": 300, "out": 120, "think": 100, "late": 1})
+
+    def test_a_model_out_of_its_day_is_not_asked_again_when_the_list_is_refreshed(self):
+        def answer(model, probe):
+            if model == "a":
+                raise Exception("429 RESOURCE_EXHAUSTED GenerateRequestsPerDay retryDelay': '3600s'")
+            return '{"fits": true}'
+        _, calls, _ = self.vision(answer, listed=())
+        self.assertEqual([m for m, probe in calls if probe and m == "a"], ["a"], "probed once, then left alone")
 
     def test_a_check_that_stopped_goes_on_from_the_picture_it_reached(self):
         import make

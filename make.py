@@ -383,7 +383,8 @@ def judge(todo, items, subject, cache_file):
     already in the cache with the same bytes is never looked at again, in this run or the next: a run that stops
     goes on from the picture it reached instead of from the first one."""
     question = lambda x: FIT.format(subject=subject, line=items[x][1][:400], prompt=items[x][0][:300])
-    if todo and os.getenv("VISION_LOCAL", "1") == "1" and shutil.which("nvidia-smi"):
+    # off until a model passes the canary: Qwen2.5-VL-3B missed it on every film and its load cost half an hour of GPU
+    if todo and os.getenv("VISION_LOCAL", "0") == "1" and shutil.which("nvidia-smi"):
         test = canary(cache_file.parent)
         items = {**items, test: ("a wide empty desert at dawn", "The desert stretches out under the morning sun.", 0)}
         job = cache_file.with_name("vision_todo.json")
@@ -413,6 +414,8 @@ def judge(todo, items, subject, cache_file):
         list(ex.map(look, rest))
     finally:
         ex.shutdown(wait=False, cancel_futures=True)
+        if rest:
+            print(f"  {writer.usage()} for {len(rest)} pictures", flush=True)
     return cache
 
 
