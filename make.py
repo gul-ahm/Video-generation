@@ -228,7 +228,8 @@ def kinetic(e, folder, want=None, seconds=None):
     return {**e, "kind": "hfo", "fx": kind, "card": f"hyperframes {kind}", "frames": str(got), "step": 1} if got else None
 
 
-CAPTION_HOLD = float(os.getenv("CAPTION_HOLD", "7"))  # seconds a caption may stay on after its word
+CAPTION_HOLD = float(os.getenv("CAPTION_HOLD", "8"))  # seconds a caption may stay on after its word
+SAME_MAX = 7.5  # seconds one picture may stay on in a row (qa: longest same picture, at most 8)
 
 
 def put_caption(shots, t, e):
@@ -255,6 +256,30 @@ def put_caption(shots, t, e):
         nxt[1] -= short
     s[3]["caption"] = {**e, "_t": t}
     return s[3]["caption"]
+
+
+def break_long_runs(shots):
+    """A beat that is spoken slowly keeps its one picture on for longer than SAME_MAX (day 6: 9 s): the last shot of
+    such a run shows the next beat's picture a little early, or the one before when there is none after. Again
+    until no run is too long, as the borrowed picture's own run grows."""
+    for _ in range(len(shots)):
+        run, start = 0.0, 0
+        for i, s in enumerate(shots):
+            if i and qa.root(s[0]) == qa.root(shots[i - 1][0]):
+                run += s[1]
+            else:
+                run, start = s[1], i
+            if run > SAME_MAX and i > start:
+                end = next((k for k in range(i + 1, len(shots)) if qa.root(shots[k][0]) != qa.root(s[0])), None)
+                other = shots[end] if end is not None else shots[start - 1] if start else None
+                if other is None or other[0].suffix.lower() not in (".jpg", ".png") or len(s) < 4:
+                    return shots
+                last = (end - 1) if end is not None else start
+                shots[last][0] = other[0]
+                break
+        else:
+            return shots
+    return shots
 
 
 def hold_captions(shots, stop):
@@ -297,7 +322,7 @@ def lit(ch, plan):
 
 # a picture stays on screen for about this many spoken words (188 a minute: about 6 seconds); a longer beat gets a
 # second and third view of its scene. One picture per 40 word beat held 13 seconds and drifted off the sentence.
-WORDS_PER_PICTURE = int(os.getenv("WORDS_PER_PICTURE", "18"))
+WORDS_PER_PICTURE = int(os.getenv("WORDS_PER_PICTURE", "22"))  # 18 gave day 6 12.4 pictures a minute (at most 12)
 VIEWS = ("the same moment from another angle, closer", "the same scene from further away, wide")
 SOURCE_MAX = float(os.getenv("SOURCE_MAX", "4.5"))  # an article fills the screen this long, then the beat's picture
 
@@ -646,9 +671,10 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
         if not card_start and abs(near - b) < 0.25 and shots[i][1] + near - b > 1 and shots[i + 1][1] - (near - b) > 1:
             shots[i][1] += near - b
             shots[i + 1][1] -= near - b
+    shots = break_long_runs(shots)
     starts = [at(w) for w, _ in plan.get("lines", [])]
     sentence = lambda t: next((x for x in starts if x > t + 0.5), dur)
-    held = hold_captions(shots, sentence if os.getenv("CAPTION_SPAN", "sentence") == "sentence" else lambda t: dur)
+    held = hold_captions(shots, sentence if os.getenv("CAPTION_SPAN", "next") == "sentence" else lambda t: dur)
     for c, word in captions:
         e = {k: v for k, v in c.items() if k not in ("_t", "held", "from", "dur")}
         got = kinetic(e, folder, choice(word).get("caption_fx"), c.get("dur")) or (

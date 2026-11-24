@@ -549,6 +549,18 @@ class Checks(unittest.TestCase):
         first["at"], title["at"], nxt["at"] = 1.0, 0.5, 1.0  # timeline sets them once the cuts are final
         self.assertEqual(qa.timing([(shots, None)]), 0.0, "a held caption is not a second landing")
 
+    def test_no_picture_stays_on_longer_than_eight_seconds(self):
+        import make
+        import qa
+        pic = lambda name, n: [[Path(f"{name}.jpg"), 3.0, 0.0, {}] for _ in range(n)]
+        shots = make.break_long_runs(pic("a", 3) + pic("b", 1) + pic("c", 2))
+        self.assertEqual([s[0].stem for s in shots], ["a", "a", "b", "b", "c", "c"], "the next beat comes a little early")
+        self.assertLessEqual(qa.longest_same(shots), 8.0)
+        end = make.break_long_runs(pic("a", 1) + pic("b", 3))
+        self.assertEqual([s[0].stem for s in end], ["a", "a", "b", "b"], "at the end, the beat before")
+        card = make.break_long_runs(pic("a", 3) + [[Path("card_1.json"), 3.0, 0.0]])
+        self.assertEqual([s[0].stem for s in card], ["a", "a", "a", "card_1"], "a card is never borrowed")
+
     def test_an_article_shows_briefly_then_the_beat_has_its_own_pictures(self):
         import make
         with tempfile.TemporaryDirectory() as d:
