@@ -629,6 +629,10 @@ class Checks(unittest.TestCase):
         self.assertEqual(["caption" in s[3] for s in late], [False, True], "the caption stays on its word")
         self.assertEqual(make.beat_lengths({"shots": [("a", 3), ("b", 2)]}, 10.0, [(0, 0, "w")] * 3 + [(4.5, 0, "w")] * 2),
                          [4.5, 5.5])
+        tight = make.break_long_runs([[Path("a.jpg"), 6.0, 0.0, {}], [Path("b.jpg"), 4.0, 0.0, {}], [Path("b.jpg"), 4.0, 0.0, {}],
+                                      [Path("c.jpg"), 4.0, 0.0, {}], [Path("c.jpg"), 3.0, 0.0, {}]])
+        self.assertEqual([(s[0].stem, s[1]) for s in tight], [("a", 6.0), ("b", 4.0), ("b", 3.5), ("c", 0.5), ("c", 4.0), ("c", 3.0)],
+                         "only the half second too many goes to the next picture")
         card = make.break_long_runs(pic("a", 3) + [[Path("card_1.json"), 3.0, 0.0]])
         self.assertEqual([s[0].stem for s in card], ["a", "a", "a", "card_1"], "a card is never borrowed")
 

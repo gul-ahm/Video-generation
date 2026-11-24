@@ -280,7 +280,8 @@ def break_long_runs(shots):
             runs[-1][1:] = [i, runs[-1][2] + s[1]]
         else:
             runs.append([i, i, s[1]])
-    for k, (first, last, secs) in enumerate(runs):
+    for k in range(len(runs) - 1, -1, -1):  # from the end, so a shot cut in two moves no run still to come
+        first, last, secs = runs[k]
         if secs <= SAME_MAX or first == last or not pic(shots[first]):
             continue
         after, before = (runs[k + 1] if k + 1 < len(runs) else None), (runs[k - 1] if k else None)
@@ -290,6 +291,13 @@ def break_long_runs(shots):
         elif before and pic(shots[before[1]]) and before[2] + shots[first][1] <= TAKE_MAX:
             shots[first][0] = shots[before[1]][0]
             before[2] += shots[first][1]
+        elif after and pic(shots[after[0]]) and after[2] + secs - SAME_MAX <= TAKE_MAX and shots[last][1] - (secs - SAME_MAX) >= 1.0:
+            # neither can take a whole shot: the next picture takes only the seconds too many, from the end of the run
+            extra = secs - SAME_MAX
+            shots[last][1] -= extra
+            shots.insert(last + 1, [shots[after[0]][0], extra, shots[last][2],
+                                    {x: v for x, v in shots[last][3].items() if x not in ("caption", "intro")}])
+            after[2] += extra
     return shots
 
 
