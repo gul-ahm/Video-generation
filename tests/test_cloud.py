@@ -558,6 +558,10 @@ class Checks(unittest.TestCase):
         self.assertLessEqual(qa.longest_same(shots), 8.0)
         end = make.break_long_runs(pic("a", 1) + pic("b", 3))
         self.assertEqual([s[0].stem for s in end], ["a", "a", "b", "b"], "at the end, the beat before")
+        one = make.break_long_runs([[Path("a.jpg"), 2.0, 0.0, {}], [Path("b.jpg"), 9.0, 0.0, {"caption": {"title": "x"}}],
+                                    [Path("c.jpg"), 3.0, 0.0, {}]])
+        self.assertEqual([(s[0].stem, s[1], "caption" in s[3]) for s in one],
+                         [("a", 2.0, False), ("b", 4.5, True), ("c", 4.5, False), ("c", 3.0, False)], "one long shot in two")
         card = make.break_long_runs(pic("a", 3) + [[Path("card_1.json"), 3.0, 0.0]])
         self.assertEqual([s[0].stem for s in card], ["a", "a", "a", "card_1"], "a card is never borrowed")
 

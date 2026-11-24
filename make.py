@@ -259,10 +259,15 @@ def put_caption(shots, t, e):
 
 
 def break_long_runs(shots):
-    """A beat that is spoken slowly keeps its one picture on for longer than SAME_MAX (day 6: 9 s): the last shot of
+    """A beat that is spoken slowly keeps its one picture on for longer than SAME_MAX (day 6: one shot of 9 s): the last shot of
     such a run shows the next beat's picture a little early, or its first shot the beat before's a little longer,
     whichever stays within SAME_MAX itself. A run neither can take stays as it is."""
     pic = lambda s: s[0].suffix.lower() in (".jpg", ".png") and len(s) > 3
+    for i in range(len(shots) - 1, -1, -1):  # one shot that long (a slow beat): two halves, so one can borrow
+        s = shots[i]
+        if pic(s) and s[1] > SAME_MAX:
+            s[1] /= 2
+            shots.insert(i + 1, [s[0], s[1], s[2], {k: v for k, v in s[3].items() if k not in ("caption", "intro")}])
     runs = []  # [first, last, seconds] of one picture in a row
     for i, s in enumerate(shots):
         if runs and pic(s) and pic(shots[i - 1]) and qa.root(s[0]) == qa.root(shots[i - 1][0]):
