@@ -59,6 +59,10 @@ export default {
         const b = await req.json();
         return Response.json({ message: await startJob(env, b.day, b.from, b) });
       }
+      if (url.pathname === "/say" && req.method === "POST") {  // the kernels' messages, so they are kept too
+        const b = await req.json();
+        return Response.json(await say(env, b.text, b.buttons));
+      }
       if (url.pathname === "/claim" && req.method === "POST") return Response.json(await claim(env, (await req.json()).version));
       if (url.pathname === "/tick") return Response.json({ ok: await tick(env).then(() => true) });
       if (url.pathname === "/check") return Response.json(await check(env));
@@ -664,16 +668,66 @@ async function tg(env, method, body) {
   return r.json();
 }
 
-const say = (env, text, buttons) => tg(env, "sendMessage", {
-  chat_id: env.TELEGRAM_CHAT_ID, text: text.slice(0, 4000), disable_web_page_preview: true,
-  ...(buttons ? { reply_markup: { inline_keyboard: buttons } } : {}),
-});
+async function say(env, text, buttons) {
+  const out = await tg(env, "sendMessage", {
+    chat_id: env.TELEGRAM_CHAT_ID, text: text.slice(0, 4000), disable_web_page_preview: true,
+    ...(buttons ? { reply_markup: { inline_keyboard: buttons } } : {}),
+  });
+  await note(env, "bot", text);
+  return out;
+}
+
+// The chat, both ways, also kept as telegram_log.txt in the Drive folder (newest first), so it can be read where
+// Telegram cannot: a bot never gets back the messages it sent. A failed write loses a line, never a message.
+const LOG_LINES = 400;
+
+async function note(env, who, text) {
+  try {
+    const when = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 16).replace("T", " ");
+    const lines = [`${when} IST  ${who}: ${String(text).replace(/\s+/g, " ").slice(0, 1500)}`,
+      ...(await get(env, "log", []))].slice(0, LOG_LINES);
+    await put(env, "log", lines);
+    if (env.GOOGLE_REFRESH_TOKEN) await driveWrite(env, "telegram_log.txt", lines.join("\n") + "\n");
+  } catch (err) {
+    console.log("log:", String(err));
+  }
+}
+
+async function driveWrite(env, name, text) {
+  const t = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST", body: new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET,
+      refresh_token: env.GOOGLE_REFRESH_TOKEN, grant_type: "refresh_token" }),
+  }).then((r) => r.json());
+  const auth = { Authorization: `Bearer ${t.access_token}` };
+  let id = await env.KV.get(`drive:${name}`);
+  if (!id) {
+    const q = `name = '${name}' and '${env.DRIVE_FOLDER_ID}' in parents and trashed = false`;
+    const found = await fetch(`https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id)&q=${encodeURIComponent(q)}`,
+      { headers: auth }).then((r) => r.json());
+    id = found.files?.[0]?.id;
+    if (!id) {
+      id = (await fetch("https://www.googleapis.com/drive/v3/files?supportsAllDrives=true", {
+        method: "POST", headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify({ name, parents: [env.DRIVE_FOLDER_ID], mimeType: "text/plain" }),
+      }).then((r) => r.json())).id;
+    }
+    await env.KV.put(`drive:${name}`, id);
+  }
+  const r = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media&supportsAllDrives=true`, {
+    method: "PATCH", headers: { ...auth, "Content-Type": "text/plain; charset=utf-8" }, body: text,
+  });
+  if (r.status === 404) await env.KV.delete(`drive:${name}`);  // deleted by hand: made again next time
+}
 
 async function telegram(u, env) {
   const msg = u.message || u.callback_query?.message;
   if (!msg || String(msg.chat.id) !== String(env.TELEGRAM_CHAT_ID)) return; // only your chat
-  if (u.callback_query) return button(u.callback_query, env);
+  if (u.callback_query) {
+    await note(env, "you", `[button] ${u.callback_query.data}`);
+    return button(u.callback_query, env);
+  }
   const text = (msg.text || msg.caption || "").trim();
+  await note(env, "you", text || "[a file]");
   if (text.startsWith("/")) return command(text, env);
   const waiting = await get(env, "await", null);
   if (waiting) return feedback(msg, text, waiting, env);

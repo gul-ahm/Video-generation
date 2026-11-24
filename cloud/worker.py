@@ -81,8 +81,13 @@ def deploy():
     secret = old.get("HOOK_SECRET") or secrets.token_urlsafe(32)
     space = cf.kv()
 
+    g = json.loads((SECRETS / "google.json").read_text())
     keys = {"TELEGRAM_BOT_TOKEN": tg["TELEGRAM_BOT_TOKEN"], "TELEGRAM_CHAT_ID": tg["TELEGRAM_CHAT_ID"],
-            "KAGGLE_USERNAME": kaggle["username"], "KAGGLE_KEY": kaggle["key"], "HOOK_SECRET": secret}
+            "KAGGLE_USERNAME": kaggle["username"], "KAGGLE_KEY": kaggle["key"], "HOOK_SECRET": secret,
+            # the chat kept as telegram_log.txt in the Drive folder
+            "GOOGLE_CLIENT_ID": g["GOOGLE_CLIENT_ID"], "GOOGLE_CLIENT_SECRET": g["GOOGLE_CLIENT_SECRET"],
+            "GOOGLE_REFRESH_TOKEN": g.get("GOOGLE_REFRESH_TOKEN_DRIVE") or g["GOOGLE_REFRESH_TOKEN"],
+            "DRIVE_FOLDER_ID": g["DRIVE_FOLDER_ID"]}
     meta = {"main_module": "worker.js", "compatibility_date": "2025-06-01",
             "bindings": [{"type": "kv_namespace", "name": "KV", "namespace_id": space}] +
                         [{"type": "secret_text", "name": k, "text": v} for k, v in keys.items()]}

@@ -452,3 +452,14 @@ test("/hold stops a batch that waits, and its videos come first in the next one"
   const s = w.state();
   assert.deepEqual([s.batch, s.retry, s.tries], [null, [1, 2], {}]);
 });
+
+test("the chat is kept both ways, and a kernel's message goes through the worker", async () => {
+  const w = world({ status: () => "running" });
+  await w.telegram("/status");
+  await w.call("/say", { text: "Day 7 (gpu): voice 1/6 took 10 min" });
+  const log = JSON.parse(w.kv.get("log"));
+  assert.match(log.at(-1), /IST {2}you: \/status$/);
+  assert.match(log[0], /bot: Day 7 \(gpu\): voice 1\/6 took 10 min$/);
+  assert.equal(w.told.at(-1), "Day 7 (gpu): voice 1/6 took 10 min");
+  assert.ok(log.length >= 3);
+});

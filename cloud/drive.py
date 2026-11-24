@@ -109,7 +109,17 @@ def delete(name):
 
 
 def tell(text, buttons=None):
-    """A Telegram message to you; buttons: [(label, callback data)] in one row."""
+    """A Telegram message to you; buttons: [(label, callback data)] in one row. Through the worker, which keeps the
+    chat as telegram_log.txt on Drive; straight to Telegram when the worker cannot be reached."""
+    w = env("worker")
+    if w.get("WORKER_URL"):
+        try:
+            r = requests.post(f"{w['WORKER_URL']}/say", headers={"X-Studio-Secret": w["HOOK_SECRET"]}, timeout=30, json={
+                "text": text, "buttons": [[{"text": a, "callback_data": b} for a, b in buttons]] if buttons else None})
+            if r.ok:
+                return
+        except requests.RequestException:
+            pass
     t = env("telegram")
     if not t.get("TELEGRAM_BOT_TOKEN"):
         return
