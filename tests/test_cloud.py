@@ -174,8 +174,9 @@ class Deploy(unittest.TestCase):
         ran = types.SimpleNamespace(returncode=0 if tests_pass else 1, stderr="Ran 3 tests\n\nOK" if tests_pass else "FAILED")
         with mock.patch.object(cloud, "ROOT", root), mock.patch("requests.get", get), \
                 mock.patch.object(cloud.subprocess, "run", return_value=ran), mock.patch.object(cloud, "sync") as synced, \
-                mock.patch.object(cloud, "busy", return_value=[]):
+                mock.patch.object(cloud, "busy", return_value=[]), mock.patch("worker.deploy") as put_up:
             cloud.deploy("main")
+        self.worker_deployed = put_up.called
         return synced
 
     def test_the_commit_is_written_and_the_keys_on_the_mac_stay(self):
@@ -187,6 +188,7 @@ class Deploy(unittest.TestCase):
         self.assertEqual(((root / "make.py").read_text(), (root / "cloud/kernel.py").read_text()), ("new", "k"))
         self.assertEqual((root / "DEPLOYED").read_text().strip(), "abc1234567")
         synced.assert_called_once()
+        self.assertTrue(self.worker_deployed, "a changed kernel.py goes to the worker's store")
         with tarfile.open(next((root / "_ref").glob("before_*.tgz"))) as b:
             self.assertEqual(b.extractfile("make.py").read(), b"old")
 
