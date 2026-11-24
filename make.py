@@ -231,45 +231,56 @@ def kinetic(e, folder, want=None, seconds=None):
 CAPTION_HOLD = float(os.getenv("CAPTION_HOLD", "7"))  # seconds a caption may stay on after its word
 
 
-def put_caption(shots, t, e, end=None):
+def put_caption(shots, t, e):
     """A caption or title on the picture shot that is showing at t, appearing on the word. If the shot ends within
-    1.8 s, the cut moves a little later so the caption can be read; "_t" keeps the word time for later.
-    A caption stays on over the next picture shots of its sentence (until end, CAPTION_HOLD at most): on one shot
-    of 3.7 s it was on screen a third of the time although half the sentences had one (day 6, held at 33.8%)."""
+    1.8 s, the cut moves a little later so the caption can be read; "_t" keeps the word time for later."""
     pos = 0.0
     for j, s in enumerate(shots):
         if pos + s[1] > t:
             break
         pos += s[1]
     else:
-        return
+        return None
     if s[0].suffix == ".json":  # the word falls on a card: the caption waits for the picture after it
         pos += s[1]
         j, s = j + 1, shots[j + 1] if j + 1 < len(shots) else None
         if not s or pos - t > 2.5:
-            return
+            return None
     if len(s) < 4 or s[0].suffix == ".json" or "caption" in s[3]:
-        return
+        return None
     short = 1.8 - (pos + s[1] - max(t, pos))
     nxt = shots[j + 1] if j + 1 < len(shots) else None
     if short > 0 and nxt and nxt[0].suffix != ".json" and nxt[1] - short >= 1.2:
         s[1] += short
         nxt[1] -= short
-    s[3]["caption"] = placed = {**e, "_t": t}
-    out = [placed]
-    if end is None or e.get("kind") != "caption":
-        return out
-    pos, stop = pos + s[1], min(end, t + CAPTION_HOLD)
-    for nxt in shots[j + 1:]:  # held: it goes on from where it was, without a second entrance or an exit at the cut
-        if pos >= stop - 1.0 or pos + nxt[1] > stop + 1.5 or len(nxt) < 4 or nxt[0].suffix == ".json" or "caption" in nxt[3]:
-            break
-        nxt[3]["caption"] = {**e, "_t": t, "held": True, "from": round(pos - t, 3)}
-        out.append(nxt[3]["caption"])
-        pos += nxt[1]
-    if len(out) > 1:
-        for c in out:
-            c["dur"] = round(pos - t, 3)  # seconds on screen from its word: the exit comes at the end of the last shot
-    return out
+    s[3]["caption"] = {**e, "_t": t}
+    return s[3]["caption"]
+
+
+def hold_captions(shots, stop):
+    """Every caption stays on over the next picture shots (until stop(word time), CAPTION_HOLD at most), going on
+    from where it was: no second entrance, its exit at the end of the last shot. On its one shot of 3.7 s a caption
+    was on screen a third of the time although half the sentences had one (day 6, held at 33.8%, target 45).
+    Run once every element is placed and the cuts are final. Returns {id of the caption: [it and its copies]}."""
+    held, pos = {}, 0.0
+    for i, s in enumerate(shots):
+        pos += s[1]
+        c = s[3].get("caption") if len(s) > 3 else None
+        if not c or c.get("kind") != "caption" or c.get("held"):
+            continue
+        t, end, out = c["_t"], min(stop(c["_t"]), c["_t"] + CAPTION_HOLD), [c]
+        at = pos
+        for nxt in shots[i + 1:]:
+            if at >= end - 1.0 or at + nxt[1] > end + 1.5 or len(nxt) < 4 or nxt[0].suffix == ".json" or "caption" in nxt[3]:
+                break
+            nxt[3]["caption"] = {**c, "held": True, "from": round(at - t, 3)}
+            out.append(nxt[3]["caption"])
+            at += nxt[1]
+        if len(out) > 1:
+            for x in out:
+                x["dur"] = round(at - t, 3)
+        held[id(c)] = out
+    return held
 
 
 def lit(ch, plan):
@@ -613,6 +624,7 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
         shots[0][3]["intro"] = "sparkle"
 
     pics = list(dict.fromkeys(x for v in views.values() for x in v))
+    captions = []  # drawn once the cuts are final and it is known how long each stays on
     for word, e in sorted(plan.get("elements", []), key=lambda x: x[0]):
         t = at(word)
         if e.get("kind") in CARDS and dur - t > 2.0:
@@ -622,12 +634,9 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
                 shots = cut_in(shots, t, e, min(3.5, dur - t))
                 continue
         if e.get("kind") in OVERLAYS:
-            placed = put_caption(shots, t, e, next((at(w) for w, _ in plan.get("lines", []) if at(w) > t + 0.5), dur))
-            if placed and e["kind"] in ("caption", "title"):  # drawn for as long as it stays on
-                got = kinetic(e, folder, choice(word).get("caption_fx"), placed[0].get("dur")) or (
-                    tier2(e, folder) if e["kind"] == "caption" else e)
-                for c in placed:
-                    c.update(got)
+            placed = put_caption(shots, t, e)
+            if placed and e["kind"] in ("caption", "title"):
+                captions.append((placed, word))
 
     sections, beats = sound.plan([(at(w), m) for w, m in plan.get("moods", [])], dur, ch["title"])
     edges = list(accumulate(x[1] for x in shots))[:-1]
@@ -637,6 +646,15 @@ def timeline(ch, dur, words, folder, plan=None, first=False):
         if not card_start and abs(near - b) < 0.25 and shots[i][1] + near - b > 1 and shots[i + 1][1] - (near - b) > 1:
             shots[i][1] += near - b
             shots[i + 1][1] -= near - b
+    starts = [at(w) for w, _ in plan.get("lines", [])]
+    sentence = lambda t: next((x for x in starts if x > t + 0.5), dur)
+    held = hold_captions(shots, sentence if os.getenv("CAPTION_SPAN", "sentence") == "sentence" else lambda t: dur)
+    for c, word in captions:
+        e = {k: v for k, v in c.items() if k not in ("_t", "held", "from", "dur")}
+        got = kinetic(e, folder, choice(word).get("caption_fx"), c.get("dur")) or (
+            tier2(e, folder) if e["kind"] == "caption" else e)
+        for x in held.get(id(c), [c]):
+            x.update(got)
     cuts = [(at(w), d["cut"]) for w, d in direct if d.get("cut")]
     fx_events = plan_fx(shots, ch, folder, [at(w) for w in plan.get("turns", [])], first, cuts,
                         [at(w) for w, d in direct if d.get("leak")][:2], plan.get("open"))

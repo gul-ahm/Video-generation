@@ -535,18 +535,19 @@ class Checks(unittest.TestCase):
 
     def test_a_caption_stays_on_over_the_rest_of_its_sentence(self):
         import make
-        shots = [[Path(f"p{k}.jpg"), 3.0, 0.0, {}] for k in range(5)]
-        placed = make.put_caption(shots, 1.0, {"kind": "caption", "title": "633"}, end=8.0)
-        caps = [s[3].get("caption") for s in shots]
-        self.assertEqual([bool(c) for c in caps], [True, True, True, False, False], "until its sentence ends")
-        self.assertEqual(placed, caps[:3])
-        self.assertEqual([(c.get("held"), c.get("from"), c["dur"]) for c in caps[:3]], [(None, None, 8.0), (True, 2.0, 8.0), (True, 5.0, 8.0)])
         import qa
-        caps[0]["at"] = 1.0  # timeline sets it once the cuts are final
+        shots = [[Path(f"p{k}.jpg"), 3.0, 0.0, {}] for k in range(6)]
+        first = make.put_caption(shots, 1.0, {"kind": "caption", "title": "633"})
+        nxt = make.put_caption(shots, 13.0, {"kind": "caption", "title": "Hira"})
+        title = make.put_caption(shots, 9.5, {"kind": "title", "title": "Night Raid"})
+        held = make.hold_captions(shots, lambda t: 8.0 if t < 8 else 18.0)
+        caps = [s[3].get("caption") for s in shots]
+        self.assertEqual([c and c["title"] for c in caps], ["633", "633", "633", "Night Raid", "Hira", "Hira"])
+        self.assertEqual([(c.get("held"), c.get("from"), c.get("dur")) for c in caps[:3]],
+                         [(None, None, 8.0), (True, 2.0, 8.0), (True, 5.0, 8.0)])
+        self.assertEqual((len(held[id(first)]), len(held[id(nxt)]), id(title) in held), (3, 2, False), "a title lands once")
+        first["at"], title["at"], nxt["at"] = 1.0, 0.5, 1.0  # timeline sets them once the cuts are final
         self.assertEqual(qa.timing([(shots, None)]), 0.0, "a held caption is not a second landing")
-        title = [[Path(f"p{k}.jpg"), 3.0, 0.0, {}] for k in range(3)]
-        make.put_caption(title, 1.0, {"kind": "title", "title": "Night Raid"}, end=8.0)
-        self.assertEqual([bool(s[3].get("caption")) for s in title], [True, False, False], "a title lands once")
 
     def test_an_article_shows_briefly_then_the_beat_has_its_own_pictures(self):
         import make
