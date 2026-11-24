@@ -782,7 +782,7 @@ def edits(folder, script):
     import decide
     import director
     (folder / "parts").mkdir(exist_ok=True)
-    out, maps, shown = [], set(), []
+    out, maps, shown, cards = [], set(), [], {}  # cards: the chapter each design was last shown in
     steps = (("edit", EDIT, "edits"), ("beats", BEATS, "beats"), ("direct", DIRECT, "direct"))
     ask = lambda i, ch, prompt, lines: prompt.format(
         title=script["title"], chapter=i, chapters=len(script["chapters"]), name=ch["title"], n=len(lines),
@@ -835,10 +835,12 @@ def edits(folder, script):
                 plan["accents"].append((place(lines, starts, k, planned[2][k].get("accent_word")), planned[2][k]["accent"]))
             if e.get("kind") == "card":
                 cid = hf.resolve(str(e.get("card", "")))
-                ok = (cid and hf.catalog()[cid]["tier"] == "tier1" and f"card {cid}" not in maps
+                # a card design once a chapter: day 7 asked for 27 cards, 7 were designs shown before and became
+                # captions, and the film had 0.96 full screen cards a minute (at least 1)
+                ok = (cid and hf.catalog()[cid]["tier"] == "tier1" and cards.get(cid, i - 1) != i
                       and hf.filled(cid, e.get("slots") or {}) >= 0.7)
                 e = {**e, "card": cid} if ok else {**e, "kind": "caption", "title": headline(e)}
-                maps.add(f"card {cid}")
+                cards[cid] = i if ok else cards.get(cid, i - 1)
             if e.get("kind") == "map":  # the same map twice is a repeat, the second becomes a caption
                 where = tuple(sorted(x.get("name", "") for x in e.get("places", [])))
                 e = {**e, "kind": "caption", "title": headline(e)} if where in maps else e

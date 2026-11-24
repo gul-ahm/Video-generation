@@ -231,6 +231,7 @@ def kinetic(e, folder, want=None, seconds=None):
 
 CAPTION_HOLD = float(os.getenv("CAPTION_HOLD", "8"))  # seconds a caption may stay on after its word
 SAME_MAX = 7.5  # seconds one picture may stay on in a row (qa: longest same picture, at most 8)
+TAKE_MAX = 7.9  # how long a neighbour's run may grow when it takes a shot of a run too long (day 7: 8.06 s left)
 
 
 def put_caption(shots, t, e):
@@ -283,10 +284,10 @@ def break_long_runs(shots):
         if secs <= SAME_MAX or first == last or not pic(shots[first]):
             continue
         after, before = (runs[k + 1] if k + 1 < len(runs) else None), (runs[k - 1] if k else None)
-        if after and pic(shots[after[0]]) and after[2] + shots[last][1] <= SAME_MAX:
+        if after and pic(shots[after[0]]) and after[2] + shots[last][1] <= TAKE_MAX:
             shots[last][0] = shots[after[0]][0]
             after[2] += shots[last][1]
-        elif before and pic(shots[before[1]]) and before[2] + shots[first][1] <= SAME_MAX:
+        elif before and pic(shots[before[1]]) and before[2] + shots[first][1] <= TAKE_MAX:
             shots[first][0] = shots[before[1]][0]
             before[2] += shots[first][1]
     return shots
