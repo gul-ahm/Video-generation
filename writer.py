@@ -135,7 +135,8 @@ Return JSON:
 # 3.5 Flash Lite 500 calls a day each and 15 a minute, every Flash 20 a day and 5 a minute). Before, research fell
 # back to the Lite models once gemini-flash-latest ran out, and the picture check found nothing left.
 ROLES = {"write": ("LLM_WRITE", "gemini-flash-latest,gemini-3.6-flash,gemini-3-flash,gemini-2.5-flash"),  # chapters
-         "read": ("LLM_READ", "gemini-3.1-flash-lite"),  # sources, claims, edit plans, picture prompts
+         # sources, claims, edit plans, picture prompts; 2.5 Flash Lite (20 a day) only when 3.1 is overloaded
+         "read": ("LLM_READ", "gemini-3.1-flash-lite,gemini-2.5-flash-lite"),
          "see": ("LLM_SEE", "gemini-3.5-flash-lite")}  # the picture check
 _client = None
 _fails = Counter()
@@ -363,7 +364,10 @@ def llm(prompt, as_json=False, temp=0.8, fast=False, role=None):
     if out and all(m in out for m in models_for(role)):
         raise SystemExit(f"service busy: wait={until_reset(out.values())} the {role} models ({', '.join(out)}) "
                          f"have no free calls left today")
-    raise SystemExit("the LLM kept failing, try again in a few minutes")
+    # overloaded (503) for the whole quarter of an hour: nothing is wrong with the video, so the stage waits and goes
+    # again (the smoke film's research was counted as failed for a 503 on gemini-3.1-flash-lite)
+    raise SystemExit(f"service busy: the {role} models ({', '.join(models_for(role))}) kept failing for a quarter of "
+                     "an hour, overloaded or silent")
 
 
 # what the calls cost: tokens in, out and spent thinking, and calls given up at the time limit, which Google still

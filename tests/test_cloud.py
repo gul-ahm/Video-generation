@@ -485,6 +485,15 @@ class Checks(unittest.TestCase):
         self.assertTrue(str(err.exception).startswith("service busy: wait=5000 the read models (r1)"), err.exception)
         self.assertNotIn("s1", [m for m, _ in sent], "never another job's model")
 
+        def busy(model, messages, temperature, **extra):
+            raise Exception("Error code: 503 This model is currently experiencing high demand")
+        client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=busy)))
+        with mock.patch.object(writer, "_client", client), mock.patch.dict(os.environ, {**env, "LLM_READ": "r9"}), \
+                mock.patch("time.sleep"), self.assertRaises(SystemExit) as err:
+            writer.llm("facts", as_json=True)
+        self.assertTrue(str(err.exception).startswith("service busy: the read models (r9) kept failing"),
+                        "an overloaded model is a wait, not a failed stage")
+
     def test_calls_keep_to_the_rate_of_their_model_and_are_counted_for_the_worker(self):
         import writer
         with mock.patch.object(writer, "_pace", {}), mock.patch("time.time", return_value=1000.0), \
