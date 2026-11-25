@@ -90,6 +90,7 @@ def card_spec(e, folder, pics):
     if e["kind"] == "list":
         e["images"] = [str(p) for p in pics[:len(e.get("items", []))]]
     path = folder / f"card_{hashlib.md5(json.dumps(e, sort_keys=True).encode()).hexdigest()[:8]}.json"
+    folder.mkdir(parents=True, exist_ok=True)  # the plan gate plans a chapter before any of its pictures is drawn
     path.write_text(json.dumps(e, ensure_ascii=False), encoding="utf-8")
     return path, found[1] if e["kind"] == "document" else None
 
@@ -636,6 +637,7 @@ def source_card(line, folder):
         return None
     spec = {"kind": "source", "image": shot, "title": outlet, "sub": date}
     path = folder / f"card_{hashlib.md5(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:8]}.json"
+    folder.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
     return path
 

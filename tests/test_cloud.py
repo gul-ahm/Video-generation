@@ -621,6 +621,12 @@ class Checks(unittest.TestCase):
         first["at"], title["at"], nxt["at"] = 1.0, 0.5, 1.0  # timeline sets them once the cuts are final
         self.assertEqual(qa.timing([(shots, None)]), 0.0, "a held caption is not a second landing")
 
+    def test_a_card_is_planned_before_its_chapter_has_a_picture(self):
+        import make
+        img = Path(tempfile.mkdtemp()) / "img" / "00"  # the plan gate runs before any picture is drawn
+        path, _ = make.card_spec({"kind": "list", "items": ["a", "b"]}, img, [])
+        self.assertTrue(path.exists() and path.parent == img)
+
     def test_no_picture_stays_on_longer_than_eight_seconds(self):
         import make
         import qa
