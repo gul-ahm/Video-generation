@@ -505,3 +505,17 @@ test("Yes uploads the film for its slot with the settings; YouTube's answer goes
   assert.match(w.told.at(-1), /On YouTube: The Best Title\nhttps:\/\/youtu.be\/abc123\nPrivate until .* then public\.\nNot set: thumbnail \(403 forbidden\)\nSet in YouTube Studio \(the API cannot\): age restriction 18\+/);
   assert.equal(JSON.parse(w.kv.get(`job:${job.id}`)).status, "scheduled");
 });
+
+test("a day tried again keeps its research and goes on from the GPU stage", async () => {
+  const w = world({ perDay: 1, status: () => "running" });
+  await w.tick();
+  const r = w.last("research");
+  await w.report(r, "done");
+  w.kv.set(`job:${r.id}`, JSON.stringify({ ...JSON.parse(w.kv.get(`job:${r.id}`)), status: "failed" }));
+  w.kv.set("state", JSON.stringify({ ...w.state(), batch: null, started: {}, retry: [1], next_day: 2 }));
+  const before = w.pushes.filter((p) => p.stage === "research").length;
+  await w.tick();
+  assert.equal(w.pushes.filter((p) => p.stage === "research").length, before, "no second research");
+  assert.equal(w.last("gpu").jobs[0].id, r.id);
+  assert.match(w.told.find((t) => t.includes("keep their research")), /Day 1 keep their research/);
+});

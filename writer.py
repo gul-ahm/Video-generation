@@ -134,11 +134,11 @@ Return JSON:
 # Each job has models of its own, so one job cannot spend the free calls another needs (AI Studio, 24 Nov: 3.1 and
 # 3.5 Flash Lite 500 calls a day each and 15 a minute, every Flash 20 a day and 5 a minute). Before, research fell
 # back to the Lite models once gemini-flash-latest ran out, and the picture check found nothing left.
-ROLES = {"write": ("LLM_WRITE", "gemini-flash-latest,gemini-3.6-flash,gemini-3-flash,gemini-2.5-flash"),  # chapters
+ROLES = {"write": ("LLM_WRITE", "gemini-flash-latest,gemini-3.6-flash,gemini-3-flash-preview,gemini-2.5-flash"),  # chapters
          # sources, claims, edit plans, picture prompts. A model that fails (503, overloaded) goes to the back of the
          # list, so the next one takes the calls: 2.5 Flash Lite, then the Flash models the chapters leave unused
          # (20 a day each, the chapters take about 12 a video)
-         "read": ("LLM_READ", "gemini-3.1-flash-lite,gemini-2.5-flash-lite,gemini-3-flash,gemini-2.5-flash"),
+         "read": ("LLM_READ", "gemini-3.1-flash-lite,gemini-2.5-flash-lite,gemini-3-flash-preview,gemini-2.5-flash"),
          "see": ("LLM_SEE", "gemini-3.5-flash-lite")}  # the picture check
 _client = None
 _fails = Counter()

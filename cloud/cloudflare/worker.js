@@ -189,7 +189,7 @@ async function pushGpu(env, jobs, requeues = 0) {
 const QUOTA = {
   read: { models: ["gemini-3.1-flash-lite"], perDay: 500 },
   see: { models: ["gemini-3.5-flash-lite"], perDay: 500 },
-  write: { models: ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3-flash", "gemini-2.5-flash"], perDay: 80 },
+  write: { models: ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3-flash-preview", "gemini-2.5-flash"], perDay: 80 },
 };
 const GPU_CALLS = { read: 25, see: 100 };  // one video's GPU stage: edit plans, and the picture check five a call
 const pacificDay = () => new Date(Date.now() - 8 * 3600e3).toISOString().slice(0, 10);
@@ -299,15 +299,24 @@ async function startBatch(env, s, days) {
   s.started[today(s)] = (s.started[today(s)] || 0) + jobs.length;
   s.retry = (s.retry || []).filter((d) => !days.includes(d));
   s.next_day = Math.max(s.next_day, ...days.map((d) => d + 1));
-  const waiting = [];
+  const waiting = [], researched = [];
   for (const job of jobs) {
-    for (const k of (await env.KV.list({ prefix: `unit:${job.id}:` })).keys) await env.KV.delete(k.name);
+    // a day tried again keeps its research: its script, voice and pictures are on Drive, and doing it again spent
+    // a hundred read calls a video and threw the GPU work away (days 5 to 7, 25 Nov)
+    const keep = (await get(env, unitKey(job, "research"), null))?.state === "done";
+    for (const k of (await env.KV.list({ prefix: `unit:${job.id}:` })).keys) {
+      if (!(keep && k.name.endsWith(":research"))) await env.KV.delete(k.name);
+    }
     await put(env, `job:${job.id}`, job);
-    if ((await pushUnit(env, job, "research")).state === "waiting") waiting.push(job.day);
+    if (keep) researched.push(job.day);
+    else if ((await pushUnit(env, job, "research")).state === "waiting") waiting.push(job.day);
   }
   await put(env, "state", s);
-  return `Today's videos started: ${jobs.map((j) => `day ${j.day} ${j.title}`).join("; ")}.\nResearch first, then one GPU ` +
-    `session for all of them.${waiting.length ? `\n(research of day ${waiting.join(", ")} waits for a free machine)` : ""}`;
+  if (researched.length) await gpuWhenReady(env, s);
+  return `Today's videos started: ${jobs.map((j) => `day ${j.day} ${j.title}`).join("; ")}.\n` +
+    (researched.length ? `Day ${researched.join(", ")} keep their research and go on from the GPU stage.\n` : "") +
+    `Research first, then one GPU session for all of them.` +
+    (waiting.length ? `\n(research of day ${waiting.join(", ")} waits for a free machine)` : "");
 }
 
 // a day that failed: into a later batch once, then skipped so the plan goes on
