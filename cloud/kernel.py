@@ -300,6 +300,13 @@ def video(stage):
         vid, missed = youtube.upload(HOME / "upload", RUN["slug"], RUN.get("upload_title") or RUN["title"],
                                      RUN["publish_at"], RUN.get("settings") or {})
         return hook("uploaded", video=vid, missed=missed)
+    if stage == "research" and RUN.get("day"):  # a daily video researched before keeps its script and sources
+        import drive
+        if drive.find(f"job_{RUN['id']}.tgz"):
+            state("get")
+            if (folder() / "script.md").exists():
+                print("research: the script and sources on Drive are kept, nothing is researched again", flush=True)
+                return hook("done")
     if stage != "research":
         state("get")
     if stage in ("gpu", "check"):

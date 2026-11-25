@@ -955,3 +955,27 @@ class Upload(unittest.TestCase):
                 mock.patch("requests.put", side_effect=put), mock.patch("time.sleep"):
             self.assertEqual(self.yt.send(video, {"snippet": {}}, True), "vid1")
         self.assertEqual(puts, ["bytes 0-99/100", "bytes */100", "bytes 40-99/100"])
+
+
+class ResearchOnce(unittest.TestCase):
+    def test_a_daily_video_researched_before_keeps_its_script_and_sources(self):
+        home = Path(tempfile.mkdtemp())
+        run = {"id": "siege", "title": "Siege", "slug": "siege", "stage": "research", "nonce": "n", "day": 5}
+        k = kernel(run, home)
+        sys.path.insert(0, str(ROOT / "cloud"))
+        import drive
+        said = []
+
+        def get(direction):
+            (home / "output" / "siege").mkdir(parents=True)
+            (home / "output" / "siege" / "script.md").write_text("# Siege")
+        with mock.patch.object(drive, "find", return_value="file1"), mock.patch.object(k, "state", get), \
+                mock.patch.object(k, "hook", lambda event, **kw: said.append(event)), mock.patch.object(k, "work") as work:
+            k.video("research")
+        work.assert_not_called()
+        self.assertEqual(said, ["done"])
+        smoke = kernel({**run, "day": 0}, Path(tempfile.mkdtemp()))
+        with mock.patch.object(drive, "find", return_value="file1") as found, mock.patch.object(smoke, "work"), \
+                mock.patch.object(smoke, "state"), mock.patch.object(smoke, "hook"):
+            smoke.video("research")
+        found.assert_not_called()  # a smoke or test film is researched every time: it is there to test that
