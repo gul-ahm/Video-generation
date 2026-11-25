@@ -139,7 +139,9 @@ ROLES = {"write": ("LLM_WRITE", "gemini-flash-latest,gemini-3.6-flash,gemini-3-f
          # list, so the next one takes the calls: 2.5 Flash Lite, then the Flash models the chapters leave unused
          # (20 a day each, the chapters take about 12 a video)
          "read": ("LLM_READ", "gemini-3.1-flash-lite,gemini-2.5-flash-lite,gemini-3-flash-preview,gemini-2.5-flash"),
-         "see": ("LLM_SEE", "gemini-3.5-flash-lite")}  # the picture check
+         # the picture check; when 3.5 Flash Lite is overloaded (503, day 5 waited half an hour for it) the next
+         # takes the calls: five pictures a call, so 20 calls a day of a Flash model still check a hundred pictures
+         "see": ("LLM_SEE", "gemini-3.5-flash-lite,gemini-2.5-flash-lite,gemini-3-flash-preview")}
 _client = None
 _fails = Counter()
 _missing = set()
