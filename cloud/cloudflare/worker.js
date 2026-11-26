@@ -14,6 +14,7 @@
 //   No            asks what is wrong and keeps the reason and the screenshots for the fix step
 //   /settings     the upload settings, asked once with their options; title, description, hashtags and captions
 //                 are made by the studio, paid promotion and AI use are always "No"
+//   /ready        every video waiting for its Yes or No, sent again with the buttons
 //   /status /next /day N /pause /resume /hold /perday N /starthour H /help
 //
 // State lives in KV: "state", "plan", "kernel" (cloud/kernel.py), "settings", "job:<id>", "await".
@@ -42,6 +43,7 @@ const HELP = `History Studio
 /hold  stop the batch's videos where they are, while nothing of theirs runs on Kaggle; they come first next batch
 /perday N  videos a day (now 4), /starthour H  when the day's videos begin, India time (now 6)
 /settings  choose the upload settings (/settings reset to choose again)
+/ready  the videos waiting for Yes or No, with the buttons again
 /undo  take back the last Yes`;
 
 export default {
@@ -426,6 +428,12 @@ function readyText(e) {
   return `Video ready: ${e.best || e.title}\n\nWatch: ${e.link}${warn}${quality}\n\nCheck the screenshots and facts, then approve.`;
 }
 
+const verdict = (id) => [[{ text: "Yes, publish", callback_data: `yes:${id}` }, { text: "No", callback_data: `no:${id}` }]];
+
+async function review(env, job) {
+  return say(env, readyText({ ...job, title: job.title || job.id }), verdict(job.id));
+}
+
 async function hook(e, env) {
   const job = await get(env, `job:${e.id}`, null);
   const key = e.stage === "part" ? `part${e.part}` : e.stage;
@@ -482,7 +490,8 @@ async function hook(e, env) {
   }
   if (e.event === "ready") {
     await put(env, unitKey(job, key), { ...u, state: "done", finished: Date.now() });
-    Object.assign(job, { status: "ready", link: e.link, best: e.best, ready: new Date().toISOString() });
+    Object.assign(job, { status: "ready", link: e.link, best: e.best, ready: new Date().toISOString(),
+                         quality: e.quality, fix: e.fix, title_check: e.title_check });
     await put(env, `job:${job.id}`, job);
     await batchEnded(env, s);
     if (job.run.smoke) {  // every stage worked on this code: cloud.py smoke now gives it to the day's videos
@@ -491,8 +500,7 @@ async function hook(e, env) {
       await say(env, `SMOKE FILM passed: every stage worked on code ${code}. It becomes the code of the daily videos.\n` +
         `Quality (not checked for a smoke film): ${e.quality || "?"}\nWatch: ${e.link}`);
     } else if (job.day === 0) await say(env, `TEST FILM, not for publishing\n\n${readyText(e)}`);
-    else await say(env, readyText(e), [[{ text: "Yes, publish", callback_data: `yes:${job.id}` },
-                                        { text: "No", callback_data: `no:${job.id}` }]]);
+    else await review(env, job);
   }
   for (const w of Object.keys(s.gpu)) if (w < week()) delete s.gpu[w];
   for (const d of Object.keys(s.started)) if (d < today(s)) delete s.started[d];
@@ -756,6 +764,8 @@ async function say(env, text, buttons) {
     ...(buttons ? { reply_markup: { inline_keyboard: buttons } } : {}),
   });
   await note(env, "bot", text);
+  // a message Telegram refused is written down, so a missing message (or its buttons) shows in the log
+  if (!out?.ok) await note(env, "telegram", `refused the message above: ${out?.error_code} ${out?.description}`);
   return out;
 }
 
@@ -929,8 +939,15 @@ async function command(text, env) {
     const left = jobs.filter((j) => j.status === "approved" && j.id !== last.id).map((j) => j.publish_at).sort();
     s.last_slot = left.at(-1) || null;
     await put(env, "state", s);
-    return say(env, `Approval taken back: ${last.title || last.id}${last.link ? `\n${last.link}` : ""}`,
-      [[{ text: "Yes, publish", callback_data: `yes:${last.id}` }, { text: "No", callback_data: `no:${last.id}` }]]);
+    return say(env, `Approval taken back: ${last.title || last.id}${last.link ? `\n${last.link}` : ""}`, verdict(last.id));
+  }
+  if (cmd === "/ready") {  // every video still waiting for its Yes or No, with the buttons again
+    const keys = (await env.KV.list({ prefix: "job:" })).keys.map((k) => k.name);
+    const waiting = (await Promise.all(keys.map((k) => get(env, k, null))))
+      .filter((j) => j && j.status === "ready" && j.day > 0).sort((a, b) => a.day - b.day);
+    if (!waiting.length) return say(env, "No video is waiting for a Yes or No.");
+    for (const j of waiting) await review(env, j);
+    return;
   }
   if (cmd === "/settings") {
     if (arg === "reset") await put(env, "settings", {});

@@ -7,7 +7,7 @@ import worker from "./worker.js";
 
 // Kaggle's status of a kernel: the GPU kernel ended (nothing of ours or anyone's is there), the others running
 function world({ refuse = () => false, status = (url) => (url.includes("studio-gpu") ? "complete" : "running"), perDay = 1 } = {}) {
-  const kv = new Map(), told = [], pushes = [], deleted = [];
+  const kv = new Map(), told = [], pushes = [], deleted = [], buttons = [];
   const KV = {
     get: async (k) => kv.get(k) ?? null, put: async (k, v) => kv.set(k, v), delete: async (k) => kv.delete(k),
     list: async ({ prefix }) => ({ keys: [...kv.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })) }),
@@ -28,7 +28,11 @@ function world({ refuse = () => false, status = (url) => (url.includes("studio-g
       return new Response(JSON.stringify({ ref: body.slug }));
     }
     if (String(url).includes("kernels/status")) return new Response(JSON.stringify({ status: status(String(url)) }));
-    if (body?.text) told.push(body.text);
+    if (body?.text) {
+      told.push(body.text);
+      buttons.push(body.reply_markup?.inline_keyboard ?? null);
+      return new Response(JSON.stringify(body.text.includes("REFUSE") ? { ok: false, error_code: 400, description: "Bad Request" } : { ok: true }));
+    }
     return new Response("{}");
   };
   const env = { KV, HOOK_SECRET: "s", TELEGRAM_BOT_TOKEN: "t", TELEGRAM_CHAT_ID: "7", KAGGLE_USERNAME: "u", KAGGLE_KEY: "k" };
@@ -46,7 +50,7 @@ function world({ refuse = () => false, status = (url) => (url.includes("studio-g
   const button = (data) => worker.fetch(new Request("https://w/telegram", {
     method: "POST", headers: { "X-Telegram-Bot-Api-Secret-Token": "s" },
     body: JSON.stringify({ callback_query: { id: "q", data, message: { chat: { id: 7 }, message_id: 2 } } }) }), env);
-  return { kv, told, pushes, deleted, env, call, last, report, state, telegram, button, tick: () => call("/tick") };
+  return { kv, told, buttons, pushes, deleted, env, call, last, report, state, telegram, button, tick: () => call("/tick") };
 }
 
 async function toParts(w, chapters = 3) {
@@ -518,4 +522,24 @@ test("a day tried again keeps its research and goes on from the GPU stage", asyn
   assert.equal(w.pushes.filter((p) => p.stage === "research").length, before, "no second research");
   assert.equal(w.last("gpu").jobs[0].id, r.id);
   assert.match(w.told.find((t) => t.includes("keep their research")), /Day 1 keep their research/);
+});
+
+test("/ready sends every video still waiting for its Yes or No again, with the buttons and its checks", async () => {
+  const w = world();
+  await toParts(w, 1);
+  await w.report(w.last("part", 0), "done");
+  await w.report(w.last("join"), "ready", { link: "L", best: "Best", quality: "15 of 15 checks pass" });
+  const id = w.pushes[0].id;
+  assert.deepEqual(w.buttons.at(-1)[0].map((b) => b.callback_data), [`yes:${id}`, `no:${id}`]);
+  await w.telegram("/ready");
+  assert.match(w.told.at(-1), /Video ready: Best[\s\S]*Watch: L[\s\S]*15 of 15 checks pass/);
+  assert.deepEqual(w.buttons.at(-1)[0].map((b) => b.callback_data), [`yes:${id}`, `no:${id}`]);
+  await w.button(`yes:${id}`);
+  assert.equal(await w.telegram("/ready"), "No video is waiting for a Yes or No.");
+});
+
+test("a message Telegram refuses is written in the log with Telegram's reason", async () => {
+  const w = world({ status: () => "running" });
+  await w.call("/say", { text: "REFUSE this one" });
+  assert.match(JSON.parse(w.kv.get("log"))[0], /telegram: refused the message above: 400 Bad Request$/);
 });
