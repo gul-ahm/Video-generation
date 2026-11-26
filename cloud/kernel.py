@@ -280,7 +280,10 @@ def report(err):
     sys.path.insert(0, str(HOME / "cloud"))
     if RUN["stage"] in ("gpu", "check") and (HOME / "cloud").exists():
         checks("put")
-    if RUN["stage"] == "gpu" and folder().exists():  # the pictures drawn again so far go too: the next run starts there
+    # what was made so far goes to Drive, and the next run starts there: the pictures drawn again, or the research
+    # (sources read, claims, outline, chapters written). A paused research kept nothing before and began again from
+    # the first search, so day 8 read its sources and wrote its chapters five times over and spent the day's calls.
+    if RUN["stage"] in ("gpu", "research") and folder().exists():
         try:
             state("put")
         except Exception as lost:
@@ -300,13 +303,15 @@ def video(stage):
         vid, missed = youtube.upload(HOME / "upload", RUN["slug"], RUN.get("upload_title") or RUN["title"],
                                      RUN["publish_at"], RUN.get("settings") or {})
         return hook("uploaded", video=vid, missed=missed)
-    if stage == "research" and RUN.get("day"):  # a daily video researched before keeps its script and sources
+    if stage == "research" and RUN.get("day"):  # a daily video researched before keeps what it made
         import drive
         if drive.find(f"job_{RUN['id']}.tgz"):
             state("get")
             if (folder() / "script.md").exists():
                 print("research: the script and sources on Drive are kept, nothing is researched again", flush=True)
                 return hook("done")
+            kept = sorted(p.name for p in (folder() / "research").glob("*.json")) if (folder() / "research").exists() else []
+            print(f"research: goes on from what the last run kept ({len(kept)} files)", flush=True)
     if stage != "research":
         state("get")
     if stage in ("gpu", "check"):

@@ -827,6 +827,16 @@ class Reports(unittest.TestCase):
         self.assertEqual((post.body["nonce"], post.body["part"], post.body["event"]), ("n1", 2, "done"))
         fake.tell.assert_not_called()
 
+    def test_a_paused_research_keeps_what_it_made_on_drive(self):
+        """A research that stops for want of calls saves its folder, so the next run reads no source twice."""
+        k = kernel({"stage": "research", "nonce": "n1", "id": "d8", "title": "Day 8", "slug": "day-8", "day": 8})
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(k, "folder", return_value=Path(d)), \
+                mock.patch.object(k, "state") as state, mock.patch.object(k, "hook") as hook:
+            k.report(k.Busy("service busy: wait=600 the write models have no free calls left today"))
+        state.assert_called_once_with("put")
+        self.assertEqual((hook.call_args.args[0], hook.call_args.kwargs["kind"], hook.call_args.kwargs["wait"]),
+                         ("failed", "busy", 600))
+
     def test_a_run_the_worker_replaced_stops_before_it_installs_anything(self):
         k = kernel({"stage": "gpu", "nonce": "old", "id": "d1", "title": "Day 1", "slug": "day-1", "day": 1})
         with mock.patch.object(k, "unpack"), mock.patch.object(k, "install") as install, \
