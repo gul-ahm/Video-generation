@@ -3,12 +3,13 @@ screen cards (number, list, bar chart, map, document on a desk, timeline, compar
 paper headline over a picture.
 
 Timing follows hyperframes' MOTION_PHILOSOPHY (every element eases in within 0.3 to 0.6 s, the next one follows
-0.3 s later, nothing moves after it lands except a slow push) and huashu-art-motion's camera rules (slow push on
-cards, no movement on readable text). Colours copy modern history explainers: cream infographic cards, navy maps
+0.3 s later, nothing moves after it lands except a steady drift) and huashu-art-motion's camera rules (a steady
+drift on cards). Colours copy modern history explainers: cream infographic cards, navy maps
 with a green country and gold routes, white condensed captions with a gold line under them.
 """
 import json
 import math
+import zlib
 from functools import lru_cache
 
 import numpy as np
@@ -17,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 import visuals
 
 FPS = 30
+PAN, PUSH = 0.02, 0.01  # a card's sideways drift and push, per second
 CREAM, INK, GOLD, RED = (236, 233, 225), (34, 34, 38), (232, 182, 44), (196, 40, 40)
 NAVY, LAND, EDGE, GREEN, WHITE = (23, 33, 52), (40, 54, 78), (58, 74, 102), (62, 140, 80), (255, 255, 255)
 
@@ -169,20 +171,22 @@ def map_base(spec, w, h):
 
 
 def card_frames(spec, frames, w, h):
-    """Yields the frames of one full screen card. Every card keeps a slow push (5%) after its last element lands, so
-    the screen is never fully still (huashu: a still frame over 2 s reads as a slideshow)."""
-    if spec.get("kind") == "map":
-        yield from drawn(spec, frames, w, h)
-        return
-    if spec.get("kind") == "hf":  # a HyperFrames card drawn by hf.py, then the same slow push as our cards
+    """Yields the frames of one full screen card. After its last element lands a card keeps drifting sideways at a
+    steady PAN of its width a second, with a slight push: a slower move (the old 5% push over the whole card, or 1% a
+    second) left a one pin map or a list looking frozen for 3 s, and the film failed its still check (day 6)."""
+    if spec.get("kind") == "hf":  # a HyperFrames card drawn by hf.py, then the same drift as our cards
         import hf
         src = (hf.frame(spec["frames"], n, (w, h)).convert("RGB") for n in range(frames))
     else:
         src = drawn(spec, frames, w, h)
+    travel = PAN * frames / FPS
+    left = zlib.crc32(json.dumps(spec, sort_keys=True).encode()) % 2  # cards take turns drifting left and right
     for n, img in enumerate(src):
-        z = 1 + 0.05 * n / max(frames - 1, 1)  # steady, not eased, so it never comes to a stop
+        t = n / FPS
+        z = 1 + travel + PUSH * t
         cw, ch = w / z, h / z
-        yield img.transform((w, h), Image.EXTENT, ((w - cw) / 2, (h - ch) / 2, (w + cw) / 2, (h + ch) / 2), Image.BILINEAR)
+        x0 = (w - cw) * (1 - t / (frames / FPS) if left else t / (frames / FPS))
+        yield img.transform((w, h), Image.EXTENT, (x0, (h - ch) / 2, x0 + cw, (h + ch) / 2), Image.BILINEAR)
 
 
 def drawn(spec, frames, w, h):
@@ -209,9 +213,7 @@ def drawn(spec, frames, w, h):
                     d.ellipse([x - r, y - r, x + r, y + r], fill=GOLD, outline=WHITE, width=2)
                     # labels take turns above and below their pin so close places do not overlap
                     img.paste(*draw_label(name, f, (round(x + r * 2), round(y - h * (0.075 if i % 2 == 0 else -0.005))), a))
-            z = 1 + 0.06 * n / max(frames - 1, 1)
-            yield img.resize((round(w * z), round(h * z)), Image.BILINEAR).crop(
-                (round(w * (z - 1) / 2), round(h * (z - 1) / 2), round(w * (z - 1) / 2) + w, round(h * (z - 1) / 2) + h))
+            yield img
         return
     if kind == "document":
         desk = wood(w, h)

@@ -906,6 +906,22 @@ class Cards(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 make.card_frames("vox.t1.stat", {}, Path("x"))
 
+    def test_no_card_stands_still_after_its_elements_land(self):
+        """Day 6 was held for a one pin map that stood still for 3 s: every kind of card, as long as the longest card
+        of a film, keeps moving for the film's still check."""
+        import qa
+        import render
+        specs = [{"kind": "map", "country": "SAU", "places": [{"name": "Mecca", "lat": 21.4, "lon": 39.8}]},
+                 {"kind": "list", "title": "Three armies", "items": ["Khalid", "Qaqa", "Abu Layla"]},
+                 {"kind": "timeline", "title": "t", "events": [{"year": 633, "label": "a"}, {"year": 634, "label": "b"}]},
+                 {"kind": "compare", "left": {"title": "a", "items": ["x"]}, "right": {"title": "b", "items": ["y"]}}]
+        with tempfile.TemporaryDirectory() as d:
+            for spec in specs:
+                src = Path(d) / "card.json"
+                src.write_text(json.dumps(spec))
+                still = qa.motion(qa.frames(render.segment(src, int(5.7 * render.FPS), 0, Path(d) / "card.mp4")))["still"]
+                self.assertLessEqual(still, qa.TARGETS["longest still moment (s)"][1], spec["kind"])
+
     def test_strict_effects_stop_when_not_set_up(self):
         import fx
         with mock.patch.dict(os.environ, {"STRICT": "1", "FX": "1"}), mock.patch.object(fx, "node", return_value=None):
