@@ -61,6 +61,12 @@ export default {
         const b = await req.json();
         return Response.json({ message: await startJob(env, b.day, b.from, b) });
       }
+      if (url.pathname === "/command" && req.method === "POST") {  // cloud.py: a Telegram command (/hold, /resume, ...)
+        const { text } = await req.json();
+        await note(env, "cloud.py", text);
+        await command(String(text), env);
+        return Response.json({ message: `sent ${text}` });
+      }
       if (url.pathname === "/usage" && req.method === "POST") return Response.json(await countCalls(env, await req.json()));
       if (url.pathname === "/say" && req.method === "POST") {  // the kernels' messages, so they are kept too
         const b = await req.json();

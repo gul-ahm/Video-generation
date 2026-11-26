@@ -543,3 +543,11 @@ test("a message Telegram refuses is written in the log with Telegram's reason", 
   await w.call("/say", { text: "REFUSE this one" });
   assert.match(JSON.parse(w.kv.get("log"))[0], /telegram: refused the message above: 400 Bad Request$/);
 });
+
+test("cloud.py sends a Telegram command through /command, and it is written in the chat log", async () => {
+  const w = world();
+  await w.call("/command", { text: "/pause" });
+  assert.equal(JSON.parse(w.kv.get("state")).paused, true);
+  assert.match(w.told.at(-1), /Automatic start paused/);
+  assert.match(JSON.parse(w.kv.get("log")).find((l) => l.includes("cloud.py")), /cloud\.py: \/pause/);
+});
