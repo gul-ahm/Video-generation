@@ -194,11 +194,17 @@ async function pushGpu(env, jobs, requeues = 0) {
 // or waits for a service goes into the next session, after the one running has finished every video it was given.
 // AI Studio's free calls, counted here as the stages make them (writer.tell_usage). The roles mirror writer.ROLES;
 // the limits are the project's (AI Studio rate limit page, 24 Nov). They come back at midnight in California.
-const QUOTA = {
-  read: { models: ["gemini-3.1-flash-lite"], perDay: 500 },
-  see: { models: ["gemini-3.5-flash-lite"], perDay: 500 },
-  write: { models: ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3-flash-preview", "gemini-2.5-flash"], perDay: 80 },
+// each model's free calls a day, and the models each role goes down (as writer.ROLES): a model shared by two roles
+// counts for both, so "left" is what the role could still get, not a reservation
+const PER_DAY = { "gemini-3.1-flash-lite": 500, "gemini-3.5-flash-lite": 500, "gemini-2.5-flash-lite": 20,
+  "gemini-flash-latest": 20, "gemini-3.6-flash": 20, "gemini-3-flash-preview": 20, "gemini-2.5-flash": 20 };
+const ROLES = {
+  write: ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+  read: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash"],
+  see: ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3-flash-preview"],
 };
+const QUOTA = Object.fromEntries(Object.entries(ROLES).map(([role, models]) =>
+  [role, { models, perDay: models.reduce((n, m) => n + PER_DAY[m], 0) }]));
 const GPU_CALLS = { read: 25, see: 100 };  // one video's GPU stage: edit plans, and the picture check five a call
 const pacificDay = () => new Date(Date.now() - 8 * 3600e3).toISOString().slice(0, 10);
 
@@ -212,7 +218,7 @@ async function countCalls(env, add) {
 async function callsLeft(env) {
   const used = await get(env, `calls:${pacificDay()}`, {});
   return Object.fromEntries(Object.entries(QUOTA).map(([role, q]) =>
-    [role, q.perDay - q.models.reduce((n, m) => n + (used[m] || 0), 0)]));
+    [role, q.models.reduce((n, m) => n + Math.max(0, PER_DAY[m] - (used[m] || 0)), 0)]));
 }
 
 // seconds to midnight in California, when the calls come back

@@ -759,6 +759,26 @@ class Checks(unittest.TestCase):
         self.assertTrue(got.startswith("service busy:"), got)
         self.assertIn("a: 503 busy", got)
 
+    def test_chapters_go_on_with_flash_lite_once_every_flash_model_is_spent_and_spent_ones_are_not_asked_again(self):
+        import writer
+        spent = Exception("429 You exceeded your current quota GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+        asked, said = [], []
+
+        def ask(model, *a):
+            asked.append(model)
+            if "lite" not in model:
+                raise spent
+            return "a chapter"
+        with mock.patch.dict(os.environ, {"LLM_API_KEY": "k", "LLM_WRITE": ""}), mock.patch.object(writer, "_client", object()), \
+                mock.patch.object(writer, "ask", side_effect=ask), mock.patch.object(writer, "_out", {}), \
+                mock.patch.object(writer, "_lite_told", set()), mock.patch.object(writer, "say", side_effect=said.append):
+            self.assertEqual(writer.llm("write chapter 1"), "a chapter")
+            first = list(asked)
+            self.assertEqual(writer.llm("write chapter 2"), "a chapter")
+        self.assertEqual(first[:4], ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3-flash-preview", "gemini-2.5-flash"])
+        self.assertEqual(asked[len(first):], ["gemini-3.5-flash-lite"], "the spent Flash models are not asked again")
+        self.assertEqual(sum(l.startswith("gemini: the Flash models have no calls left") for l in said), 1)
+
     def test_free_calls_used_up_for_the_day_say_when_they_come_back(self):
         spent = Exception("Error code: 429 - [{'error': {'code': 429, 'message': 'You exceeded your current quota', "
                           "'details': [{'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier'}, "
