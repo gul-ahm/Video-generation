@@ -197,11 +197,15 @@ async function pushGpu(env, jobs, requeues = 0) {
 // each model's free calls a day, and the models each role goes down (as writer.ROLES): a model shared by two roles
 // counts for both, so "left" is what the role could still get, not a reservation
 const PER_DAY = { "gemini-3.1-flash-lite": 500, "gemini-3.5-flash-lite": 500, "gemini-2.5-flash-lite": 20,
-  "gemini-flash-latest": 20, "gemini-3.6-flash": 20, "gemini-3-flash-preview": 20, "gemini-2.5-flash": 20 };
+  "gemini-flash-latest": 20, "gemini-3.6-flash": 20, "gemini-4-hydrogen": 20, "gemini-3-flash-preview": 20,
+  "gemini-2.5-flash": 20, "gemini-robotics-er-2-preview": 20, "gemma-4-31b-it": 14400, "gemma-4-26b-a4b-it": 14400 };
 const ROLES = {
-  write: ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
-  read: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-2.5-flash"],
-  see: ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3-flash-preview"],
+  write: ["gemini-flash-latest", "gemini-3.6-flash", "gemini-4-hydrogen", "gemini-3-flash-preview", "gemini-2.5-flash",
+          "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b-it", "gemma-4-26b-a4b-it"],
+  read: ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-2.5-flash-lite",
+         "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-robotics-er-2-preview"],
+  see: ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b-it", "gemma-4-26b-a4b-it", "gemini-robotics-er-2-preview",
+        "gemini-2.5-flash-lite", "gemini-3-flash-preview"],
 };
 const QUOTA = Object.fromEntries(Object.entries(ROLES).map(([role, models]) =>
   [role, { models, perDay: models.reduce((n, m) => n + PER_DAY[m], 0) }]));
@@ -309,6 +313,8 @@ async function startJob(env, day, from = "research", extra = {}) {
 async function startBatch(env, s, days) {
   const plan = await get(env, "plan", { days: [] });
   const jobs = days.map((day, slot) => newJob(plan.days.find((x) => x.day === day), slot));
+  // the researches run together: each paces its AI Studio calls to its share of every model's rate a minute
+  for (const job of jobs) job.run.share = Math.round(100 / jobs.length) / 100;
   s.batch = { ids: jobs.map((j) => j.id), since: Date.now() };
   s.started[today(s)] = (s.started[today(s)] || 0) + jobs.length;
   s.retry = (s.retry || []).filter((d) => !days.includes(d));

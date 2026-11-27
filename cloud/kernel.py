@@ -154,7 +154,7 @@ def work(stage, **extra):
     error carries its last lines, so the message says what broke instead of only "exit status 1"."""
     import drive  # WORKER_URL and HOOK_SECRET: the AI Studio calls are counted at the worker (writer.tell_usage)
     env = {**os.environ, **drive.env("worker"), "STYLE": RUN.get("style", "documentary"),
-           "DOC_STYLE": RUN.get("style", "documentary"), **extra}
+           "DOC_STYLE": RUN.get("style", "documentary"), "LLM_SHARE": str(RUN.get("share", 1)), **extra}
     cmd = [sys.executable, "-u", "documentary/doc.py", RUN["title"], str(RUN["minutes"]), RUN.get("subject", "")]
     if stage == "check":  # cloud.py check: only the picture check, on a few pictures already made, nothing redrawn
         cmd = [sys.executable, "-u", "make.py", "check", str(folder())]

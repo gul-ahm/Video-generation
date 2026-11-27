@@ -137,13 +137,18 @@ Return JSON:
 # Every model of the key has its own calls a day (Flash 20, Flash Lite 500), so each role goes down its list and the
 # next model takes the calls when one has none left or is overloaded (503). The Flash models write best and come
 # first for chapters; when all four are spent the chapters go on with the Flash Lite models instead of waiting a day.
-ROLES = {"write": ("LLM_WRITE", "gemini-flash-latest,gemini-3.6-flash,gemini-3-flash-preview,gemini-2.5-flash,"
-                                "gemini-3.5-flash-lite,gemini-3.1-flash-lite"),
+# Gemma 4 (14,400 calls a day each, but 16k tokens a minute) comes after the Flash Lite models: slow, never spent.
+# Gemini 4 Hydrogen and Robotics ER 2 have 20 a day each (AI Studio rate limit page, 27 Nov).
+ROLES = {"write": ("LLM_WRITE", "gemini-flash-latest,gemini-3.6-flash,gemini-4-hydrogen,gemini-3-flash-preview,"
+                                "gemini-2.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it"),
          # sources, claims, edit plans, picture prompts
-         "read": ("LLM_READ", "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-2.5-flash-lite,gemini-3-flash-preview,"
-                              "gemini-2.5-flash"),
+         "read": ("LLM_READ", "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it,"
+                              "gemini-2.5-flash-lite,gemini-3-flash-preview,gemini-2.5-flash,gemini-robotics-er-2-preview"),
          # the picture check, five pictures a call
-         "see": ("LLM_SEE", "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-2.5-flash-lite,gemini-3-flash-preview")}
+         "see": ("LLM_SEE", "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemma-4-31b-it,gemma-4-26b-a4b-it,"
+                            "gemini-robotics-er-2-preview,gemini-2.5-flash-lite,gemini-3-flash-preview")}
+# calls and tokens a minute each model allows (AI Studio rate limit page); the rest of the Flash models 5 and 250k
+RATES = {"gemma": (30, 16_000), "gemini-2.5-flash-lite": (10, 250_000), "lite": (15, 250_000)}
 _client = None
 _fails = Counter()
 _missing = set()
@@ -158,13 +163,31 @@ def models_for(role):
     return [m for m in dict.fromkeys(x.strip() for x in (os.getenv(name) or default).split(",")) if m and m not in _missing]
 
 
-def wait_turn(model):
-    """Calls spread to a model's rate a minute, over every thread: 27 a minute went to a Lite model with 15 allowed,
-    and each one over the rate is refused and asked again."""
-    rate = float(os.getenv("LLM_RPM_LITE", "12") if "lite" in model else os.getenv("LLM_RPM", "4"))
+def rate(model):
+    """This run's calls and tokens a minute for a model: 80% of its limit, shared by the runs the worker started
+    together (LLM_SHARE). Three researches each paced at the full rate sent 29 calls a minute to a model allowing 15."""
+    rpm, tpm = next((r for k, r in RATES.items() if k in model), (5, 250_000))
+    share = 0.8 * float(os.getenv("LLM_SHARE") or 1)
+    return rpm * share, tpm * share
+
+
+def tokens(prompt):
+    """About how many tokens a prompt is: four characters a token, a picture about 300."""
+    parts = prompt if isinstance(prompt, list) else [{"type": "text", "text": prompt}]
+    return sum(len(p.get("text", "")) // 4 if p.get("type") == "text" else 300 for p in parts)
+
+
+def fits(model, prompt):
+    return tokens(prompt) <= rate(model)[1]
+
+
+def wait_turn(model, size=0):
+    """Calls spread to a model's rate a minute, in calls and in tokens, over every thread: each one over the rate is
+    refused and asked again."""
+    rpm, tpm = rate(model)
     with _pace_lock:
-        slot = max(time.time(), _pace.get(model, 0) + 60 / rate)
-        _pace[model] = slot
+        slot = max(time.time(), _pace.get(model, 0))
+        _pace[model] = slot + max(60 / rpm, 60 * size / tpm)
     time.sleep(max(0, slot - time.time()))
 
 
@@ -339,7 +362,7 @@ def llm(prompt, as_json=False, temp=0.8, fast=False, role=None):
     extra = {"response_format": {"type": "json_object"}} if as_json else {}
     out = _out
     for attempt in range(5):
-        models = sorted((m for m in models_for(role) if m not in out), key=lambda m: _fails[m])
+        models = sorted((m for m in models_for(role) if m not in out and fits(m, prompt)), key=lambda m: _fails[m])
         if not models:
             break
         for model in models:
@@ -348,7 +371,7 @@ def llm(prompt, as_json=False, temp=0.8, fast=False, role=None):
             try:
                 text = ask(model, prompt, temp, {**extra, **(effort(model) if role == "read" else {})}, limit)
                 say(f"answer in {time.time() - t0:.0f}s, {len(text.split())} words")
-                if role == "write" and "lite" in model and model not in _lite_told:
+                if role == "write" and ("lite" in model or "gemma" in model) and model not in _lite_told:
                     _lite_told.add(model)
                     say(f"gemini: the Flash models have no calls left today, the chapters go on with {model}")
                 for m in _fails:
@@ -501,7 +524,9 @@ def ask(model, prompt, temp, extra, limit):
         except Exception as e:
             box["e"] = e
 
-    wait_turn(model)
+    if "gemma" in model:  # Gemma takes no JSON mode and no reasoning effort; the JSON is read from its text
+        extra = {k: v for k, v in extra.items() if k not in ("response_format", "reasoning_effort")}
+    wait_turn(model, tokens(prompt))
     t = Thread(target=call, daemon=True)
     t.start()
     _usage["calls"] += 1

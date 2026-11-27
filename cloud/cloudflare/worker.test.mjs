@@ -473,7 +473,8 @@ test("the chat is kept both ways, and a kernel's message goes through the worker
 
 test("AI Studio calls are counted for the day per model, and a GPU stage they are not enough for waits for them", async () => {
   const w = world({ perDay: 3, status: () => "running" });
-  await w.call("/usage", { "gemini-3.5-flash-lite": 450, "gemini-3.1-flash-lite": 450 });
+  await w.call("/usage", { "gemini-3.5-flash-lite": 450, "gemini-3.1-flash-lite": 450, "gemma-4-31b-it": 14400,
+                           "gemma-4-26b-a4b-it": 14400, "gemini-robotics-er-2-preview": 20 });
   await w.call("/usage", { "gemini-3.5-flash-lite": 10 });
   await w.tick();
   for (const r of w.pushes.filter((x) => x.stage === "research")) await w.report(r, "done");
@@ -481,7 +482,7 @@ test("AI Studio calls are counted for the day per model, and a GPU stage they ar
   assert.equal(gpu.length, 1);
   assert.equal(gpu[0].jobs.length, 1, "130 see calls left on all its models: one video, not three");
   assert.match(w.told.find((t) => t.includes("waits for tomorrow")), /Day 2, Day 3: .*see 130 left today/);
-  assert.match(await w.telegram("/status"), /AI Studio calls left today: write 170 of 1080, read 150 of 1060, see 130 of 1040/);
+  assert.match(await w.telegram("/status"), /AI Studio calls left today: write 190 of 29900, read 150 of 29880, see 130 of 29860/);
 });
 
 test("Yes uploads the film for its slot with the settings; YouTube's answer goes to Telegram", async () => {
@@ -550,4 +551,10 @@ test("cloud.py sends a Telegram command through /command, and it is written in t
   assert.equal(JSON.parse(w.kv.get("state")).paused, true);
   assert.match(w.told.at(-1), /Automatic start paused/);
   assert.match(JSON.parse(w.kv.get("log")).find((l) => l.includes("cloud.py")), /cloud\.py: \/pause/);
+});
+
+test("the researches started together each get a share of the AI Studio rate", async () => {
+  const w = world({ perDay: 3, status: () => "running" });
+  await w.tick();
+  assert.deepEqual(w.pushes.filter((x) => x.stage === "research").map((r) => r.share), [0.33, 0.33, 0.33]);
 });

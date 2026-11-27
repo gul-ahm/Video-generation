@@ -775,9 +775,34 @@ class Checks(unittest.TestCase):
             self.assertEqual(writer.llm("write chapter 1"), "a chapter")
             first = list(asked)
             self.assertEqual(writer.llm("write chapter 2"), "a chapter")
-        self.assertEqual(first[:4], ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3-flash-preview", "gemini-2.5-flash"])
+        self.assertEqual(first[:5], ["gemini-flash-latest", "gemini-3.6-flash", "gemini-4-hydrogen", "gemini-3-flash-preview",
+                                     "gemini-2.5-flash"])
         self.assertEqual(asked[len(first):], ["gemini-3.5-flash-lite"], "the spent Flash models are not asked again")
         self.assertEqual(sum(l.startswith("gemini: the Flash models have no calls left") for l in said), 1)
+
+    def test_gemma_gets_no_json_mode_and_a_long_prompt_skips_it_and_researches_share_the_rate(self):
+        """Gemma 4 has 14,400 calls a day but 16k tokens a minute and no JSON mode; three researches together each
+        take a third of every model's rate."""
+        import writer
+        sent = []
+        client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(
+            create=lambda **kw: sent.append(kw) or types.SimpleNamespace(
+                choices=[types.SimpleNamespace(message=types.SimpleNamespace(content='{"ok": true}'))], usage=None))))
+        with mock.patch.object(writer, "_client", client), mock.patch.object(writer, "wait_turn"):
+            writer.ask("gemma-4-31b-it", "x", 0, {"response_format": {"type": "json_object"}, "reasoning_effort": "low"}, 5)
+            writer.ask("gemini-3.1-flash-lite", "x", 0, {"response_format": {"type": "json_object"}}, 5)
+        self.assertNotIn("response_format", sent[0])
+        self.assertNotIn("reasoning_effort", sent[0])
+        self.assertIn("response_format", sent[1])
+        self.assertFalse(writer.fits("gemma-4-31b-it", "word " * 20_000), "a 25k token prompt cannot go to Gemma")
+        self.assertTrue(writer.fits("gemini-3.1-flash-lite", "word " * 20_000))
+        with mock.patch.dict(os.environ, {"LLM_SHARE": "0.33"}):
+            self.assertEqual([round(x, 2) for x in writer.rate("gemini-3.1-flash-lite")], [3.96, 66000.0])
+        with mock.patch.object(writer, "_pace", {}), mock.patch("time.time", return_value=1000.0), \
+                mock.patch("time.sleep") as slept, mock.patch.dict(os.environ, {"LLM_SHARE": ""}):
+            writer.wait_turn("gemma-4-26b-a4b-it", 6400)  # half of the 12.8k tokens a minute it is paced to
+            writer.wait_turn("gemma-4-26b-a4b-it", 100)
+        self.assertEqual([round(c.args[0]) for c in slept.call_args_list], [0, 30])
 
     def test_free_calls_used_up_for_the_day_say_when_they_come_back(self):
         spent = Exception("Error code: 429 - [{'error': {'code': 429, 'message': 'You exceeded your current quota', "
