@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import requests
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 UA = {"User-Agent": f"HistoryStudio/1.0 (personal documentary tool; {os.getenv('CONTACT', 'no contact')})"}
 ZOOM = 1.15
@@ -503,12 +503,116 @@ def card(src, number, text, dst):
     return dst
 
 
-def thumbnail(src, text, dst):
-    img = ImageOps.fit(Image.open(src).convert("RGB"), (1280, 720), Image.LANCZOS)
-    img = ImageEnhance.Contrast(ImageEnhance.Color(img).enhance(1.3)).enhance(1.15)
-    shade = Image.linear_gradient("L").rotate(90).resize((1280, 720))
-    img = Image.composite(img, Image.new("RGB", img.size, "black"), shade.point(lambda v: 60 + v * 0.75))
+FONTS = Path(__file__).parent / "assets" / "fonts"
+YELLOW, RED = (255, 230, 0), (225, 6, 0)
+
+
+def _ttf(name, px):
+    return ImageFont.truetype(str(FONTS / name), px)
+
+
+def _fit(text, name, px, width):
+    """The font at px or smaller, so the text is at most width wide."""
+    f = _ttf(name, px)
+    while px > 20 and f.getlength(text) > width:
+        px -= 4
+        f = _ttf(name, px)
+    return f
+
+
+def _number(img, text, f, x, y, right, gradient):
+    """A big number with a black outline and a hard shadow below; the right one filled yellow to orange."""
+    w = f.getlength(text)
+    x = x - w if right else x
     d = ImageDraw.Draw(img)
-    d.multiline_text((60, 360), textwrap.fill(text.upper(), 14), font=font(104), fill="#ffd400", anchor="lm",
-                     stroke_width=7, stroke_fill="black", spacing=10)
+    d.text((x, y + 10), text, font=f, fill="black", stroke_width=5, stroke_fill="black")
+    d.text((x, y), text, font=f, fill="white", stroke_width=5, stroke_fill="black")
+    if gradient:
+        mask = Image.new("L", img.size)
+        ImageDraw.Draw(mask).text((x, y), text, font=f, fill=255)
+        top, bottom = f.getbbox(text)[1] + y, f.getbbox(text)[3] + y
+        ramp = Image.linear_gradient("L").resize((img.width, bottom - top))
+        fill = Image.new("RGB", img.size, (255, 123, 0))
+        fill.paste(Image.merge("RGB", [ramp.point(lambda v: 255), ramp.point(lambda v: 230 - v * 107 // 255),
+                                       ramp.point(lambda v: 0)]), (0, top))
+        img.paste(fill, (0, 0), mask)
+    return x + w / 2
+
+
+def _label(img, text, cx, y):
+    f = _ttf("BebasNeue-Regular.ttf", 44)
+    gap = 4
+    w = sum(f.getlength(c) for c in text) + gap * (len(text) - 1)
+    d, x = ImageDraw.Draw(img), cx - w / 2
+    for c in text:  # spaced out letters, as the confirmed design has them
+        d.text((x, y + 3), c, font=f, fill="black")
+        d.text((x, y), c, font=f, fill="white")
+        x += f.getlength(c) + gap
+
+
+def _versus(img, cx, cy):
+    r = 65
+    glow = Image.new("RGBA", img.size)
+    ImageDraw.Draw(glow).ellipse((cx - r - 12, cy - r - 12, cx + r + 12, cy + r + 12), fill=(255, 0, 0, 200))
+    img.paste(glow.filter(ImageFilter.GaussianBlur(20)), (0, 0), glow.filter(ImageFilter.GaussianBlur(20)))
+    disc = Image.new("RGBA", (2 * r + 8, 2 * r + 8))
+    d = ImageDraw.Draw(disc)
+    d.ellipse((4, 4, 2 * r + 4, 2 * r + 4), fill=(255, 31, 31), outline="white", width=6)
+    d.text((r + 4, r + 6), "VS", font=_ttf("Anton-Regular.ttf", 66), fill="white", anchor="mm")
+    disc = disc.rotate(8, resample=Image.BICUBIC, expand=True)
+    img.paste(disc, (cx - disc.width // 2, cy - disc.height // 2), disc)
+
+
+def _question(img, text, highlight, cy):
+    """The suspense question in a red band, tilted a little, its key words in yellow."""
+    i = text.upper().find(highlight.upper()) if highlight else -1
+    parts = [(text[:i], "white"), (text[i:i + len(highlight)], YELLOW), (text[i + len(highlight):], "white")] if i >= 0 \
+        else [(text, "white")]
+    f = _fit(text, "Montserrat-Black.ttf", 84, 1160)
+    w, h = int(f.getlength(text)), f.size
+    band = Image.new("RGBA", (w + 60, h + 34))
+    d = ImageDraw.Draw(band)
+    d.rectangle((0, 0, band.width, band.height), fill=RED)
+    x = 30
+    for part, color in parts:
+        d.text((x, 8), part, font=f, fill=color)
+        x += f.getlength(part)
+    shadow = Image.new("RGBA", band.size, (0, 0, 0, 255))
+    band, shadow = (im.rotate(2, resample=Image.BICUBIC, expand=True) for im in (band, shadow))
+    x0, y0 = 640 - band.width // 2, cy - band.height // 2
+    img.paste((0, 0, 0), (x0, y0 + 8), shadow)
+    img.paste(band, (x0, y0), band)
+
+
+def thumbnail(src, spec, dst):
+    """The channel's thumbnail (the design the owner confirmed, 27 Nov): a year tag, two numbers from the research
+    face each other with a red VS, a label under each, and a suspense question in a red band with its key words in
+    yellow, over the film's own cinematic picture. A spec without numbers keeps the tag and the question."""
+    spec = {"question": spec} if isinstance(spec, str) else spec
+    img = ImageOps.fit(Image.open(src).convert("RGB"), (1280, 720), Image.LANCZOS)
+    img = ImageEnhance.Brightness(ImageEnhance.Contrast(ImageEnhance.Color(img).enhance(1.1)).enhance(1.3)).enhance(0.8)
+    shade = Image.linear_gradient("L").resize((1280, 720)).point(lambda v: int(64 - v * 0.5 if v < 90 else (v - 90) * 1.3))
+    ring = Image.radial_gradient("L").resize((1600, 1100)).crop((160, 110, 1440, 830)).point(lambda v: max(0, v - 120))
+    img = Image.composite(Image.new("RGB", img.size, "black"), img, ImageChops.lighter(shade, ring))
+    d = ImageDraw.Draw(img)
+    if spec.get("tag"):
+        f = _ttf("Montserrat-Black.ttf", 34)
+        w = f.getlength(spec["tag"])
+        d.rectangle((40, 36, 40 + w + 28, 36 + 50), fill="black", outline=YELLOW, width=3)
+        d.text((54, 61), spec["tag"], font=f, fill=YELLOW, anchor="lm")
+    left, right = spec.get("left") or {}, spec.get("right") or {}
+    if left.get("number") and right.get("number"):
+        f = _fit(max(left["number"], right["number"], key=len), "Anton-Regular.ttf", 250, 400)
+        top, bottom = f.getbbox("0123456789")[1], f.getbbox("0123456789")[3]
+        y = 125 - top  # the digits' tops at 125 px, whatever the size the longer number allowed
+        lx = _number(img, left["number"], f, 110, y, False, False)
+        rx = _number(img, right["number"], f, 1170, y, True, True)
+        _versus(img, 640, 125 + (bottom - top) // 2)
+        _label(img, left.get("label", "").upper(), lx, y + bottom + 22)
+        _label(img, right.get("label", "").upper(), rx, y + bottom + 22)
+        cy = 580
+    else:
+        cy = 400
+    if spec.get("question"):
+        _question(img, spec["question"].upper(), spec.get("highlight", ""), cy)
     img.save(dst, quality=95)

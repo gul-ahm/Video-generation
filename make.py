@@ -867,6 +867,20 @@ def write_plan(folder, script, plans, voices):
     (folder / "edit_plan.md").write_text("\n".join(out), encoding="utf-8")
 
 
+def thumb_spec(folder, s):
+    """The thumbnail's words: research/thumbnail.json, made from the claims now for a film researched before it
+    existed; the outline's thumb text as the question when there are no claims or no calls."""
+    spec, claims = folder / "research" / "thumbnail.json", folder / "research" / "claims.json"
+    if not spec.exists() and claims.exists() and os.getenv("LLM_API_KEY"):
+        sys.path.insert(0, str(Path(__file__).parent / "documentary"))
+        import research
+        try:
+            research.thumbnail_spec(s.get("title", folder.name), json.loads(claims.read_text(encoding="utf-8")), spec.parent)
+        except (Exception, SystemExit) as err:
+            print(f"  thumbnail numbers not chosen ({str(err)[:80]}), the thumbnail keeps the outline's words")
+    return json.loads(spec.read_text(encoding="utf-8")) if spec.exists() else s["thumb"]
+
+
 def build(folder):
     t0 = time.time()
     if os.getenv("LLM_API_KEY"):
@@ -973,7 +987,7 @@ def build(folder):
     render.join(clips, folder / "final.mp4")
     laps["render"] = time.time() - t0 - sum(laps.values())
     render.srt([v[2] for v in voices], starts, folder / "subtitles.srt")
-    visuals.thumbnail(cover, s["thumb"], folder / "thumbnail.jpg")
+    visuals.thumbnail(cover, thumb_spec(folder, s), folder / "thumbnail.jpg")
     qa.report(folder, [x for _, x in done], t, laps, kinds)
     if os.getenv("LLM_API_KEY"):
         try:  # the video is finished; a busy Gemini only delays the description, which `make.py build` redoes

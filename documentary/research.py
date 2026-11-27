@@ -114,6 +114,23 @@ Return JSON: {{"ok": true, "problems": ["each wrong or unsupported part, with th
 LEDGER
 {ledger}"""
 
+THUMB = """Write the text of the YouTube thumbnail of the documentary "{title}". The design is fixed: two numbers
+face each other (left VS right) with a one to three word label under each, a year tag, and a suspense question.
+- Both numbers must be written in the ledger below exactly as numbers ("21", "1,123", "40,000"). Never round,
+  add up or invent one. Pick the contrast that makes a viewer need to know more: the two armies, a young age against
+  an old empire, ships against one chain, days of a siege against the hours it took to fall.
+- Labels: capitals, at most three words, saying what each number counts ("MUSLIMS", "YEAR OLD SULTAN").
+- tag: the year or era of the event from the ledger, as "636 AD" or "1453".
+- question: four to seven words in capitals ending in "?", asking what the video answers without giving it away.
+  highlight: one to three words of the question in a row, the ones that carry the suspense.
+- claims: the numbers of the ledger lines the two numbers come from.
+Return JSON: {{"tag": "1453", "left": {{"number": "21", "label": "YEAR OLD SULTAN"}},
+"right": {{"number": "1,123", "label": "YEAR OLD EMPIRE"}}, "question": "HOW DID A YOUNG MAN END IT?",
+"highlight": "A YOUNG MAN", "claims": [12, 40]}}
+{problem}
+LEDGER
+{ledger}"""
+
 BACKENDS = {"text": ["duckduckgo", "bing", "brave", "mojeek", "yahoo", "startpage", "google"],
             "news": ["duckduckgo", "bing", "yahoo"]}
 _turn = {"text": 0, "news": 0}
@@ -377,6 +394,37 @@ def sunni(claims, sources):
         else:
             dropped.append(c)
     return dropped
+
+
+def stated(number, claims):
+    """Is this number written in one of these claims (commas and spaces aside)?"""
+    digits = re.sub(r"[,\s]", "", str(number))
+    return bool(re.fullmatch(r"\d+(\.\d+)?", digits)) and any(
+        re.search(rf"(?<![\d.]){re.escape(digits)}(?![\d])", re.sub(r"(?<=\d)[,\s](?=\d{3})", "", c["claim"])) for c in claims)
+
+
+def thumbnail_spec(title, claims, folder):
+    """research/thumbnail.json: the words of the thumbnail (visuals.thumbnail draws them). The two numbers must be
+    written in the claims they cite, or the thumbnail keeps only its year and its question: a number on the
+    thumbnail that the sources do not give would make the whole video look false."""
+    out = folder / "thumbnail.json"
+    if out.exists():
+        return json.loads(out.read_text(encoding="utf-8"))
+    ledger = "\n".join(f"{c['id']}. ({c['status']}) {c['claim']}" for c in claims[:400])
+    by_id, problem, got = {c["id"]: c for c in claims}, "", {}
+    for _ in range(2):
+        got = writer.llm(THUMB.format(title=title, ledger=ledger, problem=problem), as_json=True, temp=0.4)
+        cited = [by_id[i] for i in got.get("claims", []) if i in by_id] or claims
+        bad = [side["number"] for side in (got.get("left") or {}, got.get("right") or {})
+               if not side.get("number") or not stated(side["number"], cited)]
+        if not bad:
+            break
+        problem = f"Your last answer used {', '.join(map(str, bad))}, which the claims you cited do not state. Use numbers they write."
+    else:
+        writer.say(f"thumbnail: no two numbers the ledger states ({', '.join(map(str, bad))}); year and question only")
+        got = {k: got.get(k) for k in ("tag", "question", "highlight")}
+    out.write_text(json.dumps(got, ensure_ascii=False, indent=1), encoding="utf-8")
+    return got
 
 
 def check_title(title, claims, folder):

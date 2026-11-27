@@ -1050,3 +1050,57 @@ class ResearchOnce(unittest.TestCase):
                 mock.patch.object(smoke, "state"), mock.patch.object(smoke, "hook"):
             smoke.video("research")
         found.assert_not_called()  # a smoke or test film is researched every time: it is there to test that
+
+
+class Thumbnail(unittest.TestCase):
+    """The confirmed design (c6, 27 Nov): two numbers the sources state, a red VS, labels, a year tag and a question."""
+    claims = [{"id": 1, "status": "confirmed", "claim": "Mehmed II was 21 years old when he took the city in 1453."},
+              {"id": 2, "status": "confirmed", "claim": "The Eastern Roman Empire had stood for 1123 years since 330."},
+              {"id": 3, "status": "confirmed", "claim": "Some 7,000 defenders held the walls."}]
+
+    def research(self):
+        sys.path.insert(0, str(ROOT / "documentary"))
+        import research
+        return research
+
+    def test_a_number_counts_only_when_a_claim_writes_it(self):
+        research = self.research()
+        self.assertTrue(research.stated("1,123", self.claims))
+        self.assertTrue(research.stated("7000", self.claims))
+        self.assertTrue(research.stated("21", self.claims[:1]))
+        self.assertFalse(research.stated("80,000", self.claims), "a number no claim gives")
+        self.assertFalse(research.stated("12", self.claims), "a part of 1123 is not 12")
+        self.assertFalse(research.stated("many", self.claims))
+
+    def test_numbers_the_claims_do_not_state_are_asked_again_then_left_off(self):
+        research = self.research()
+        good = {"tag": "1453", "left": {"number": "21", "label": "YEAR OLD SULTAN"},
+                "right": {"number": "1,123", "label": "YEAR OLD EMPIRE"}, "question": "HOW DID A YOUNG MAN END IT?",
+                "highlight": "A YOUNG MAN", "claims": [1, 2]}
+        wrong = {**good, "right": {"number": "80,000", "label": "OTTOMANS"}}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(research.writer, "llm", side_effect=[wrong, good]) as llm:
+            self.assertEqual(research.thumbnail_spec("Constantinople", self.claims, Path(d)), good)
+            self.assertIn("80,000", llm.call_args_list[1].args[0], "the second ask says which number was not stated")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(research.writer, "llm", side_effect=[wrong, wrong]), \
+                mock.patch.object(research.writer, "say"):
+            got = research.thumbnail_spec("Constantinople", self.claims, Path(d))
+            self.assertEqual(got, {"tag": "1453", "question": "HOW DID A YOUNG MAN END IT?", "highlight": "A YOUNG MAN"})
+            self.assertEqual(json.loads((Path(d) / "thumbnail.json").read_text()), got, "kept, not asked again")
+
+    def test_the_thumbnail_is_drawn_with_numbers_and_without(self):
+        import visuals
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "p.jpg"
+            Image.new("RGB", (1600, 900), (90, 80, 70)).save(src)
+            spec = {"tag": "1453", "left": {"number": "21", "label": "year old sultan"},
+                    "right": {"number": "1,123", "label": "year old empire"},
+                    "question": "How did a young man end it?", "highlight": "a young man"}
+            for i, s in enumerate((spec, {"tag": "636 AD", "question": "Who won?"}, "Ships over land?")):
+                visuals.thumbnail(src, s, Path(d) / f"t{i}.jpg")
+                img = Image.open(Path(d) / f"t{i}.jpg")
+                self.assertEqual(img.size, (1280, 720))
+            # the question band is red and its highlighted words yellow, near the bottom of the numbers thumbnail
+            px = Image.open(Path(d) / "t0.jpg").convert("RGB").crop((100, 540, 1180, 620)).getcolors(1 << 20)
+            self.assertTrue(any(r > 200 and g < 40 and b < 40 for _, (r, g, b) in px), "red band")
+            self.assertTrue(any(r > 230 and g > 200 and b < 60 for _, (r, g, b) in px), "yellow words")
