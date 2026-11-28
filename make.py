@@ -292,13 +292,39 @@ def break_long_runs(shots):
         elif before and pic(shots[before[1]]) and before[2] + shots[first][1] <= TAKE_MAX:
             shots[first][0] = shots[before[1]][0]
             before[2] += shots[first][1]
-        elif after and pic(shots[after[0]]) and after[2] + secs - SAME_MAX <= TAKE_MAX and shots[last][1] - (secs - SAME_MAX) >= 1.0:
-            # neither can take a whole shot: the next picture takes only the seconds too many, from the end of the run
+        else:
+            # neither can take a whole shot: only the seconds too many go, to the next picture from the end of the run
+            # and, where it has no room for them all, the rest to the picture before from its start (day 11: 6.25 s,
+            # 8.74 s and 6.83 s in a row, held at 8.74 because only the next picture was asked)
             extra = secs - SAME_MAX
-            shots[last][1] -= extra
-            shots.insert(last + 1, [shots[after[0]][0], extra, shots[last][2],
-                                    {x: v for x, v in shots[last][3].items() if x not in ("caption", "intro")}])
-            after[2] += extra
+            room = lambda r, end: max(0.0, TAKE_MAX - r[2]) if r and pic(shots[r[end]]) else 0.0
+            ra, rb, least = room(after, 0), room(before, 1), max(extra, 0.5)  # no sliver of a picture under 0.5 s
+            if ra >= least:
+                take_a, take_b = least, 0.0
+            elif rb >= least:
+                take_a, take_b = 0.0, least
+            elif ra >= 0.5 and rb >= 0.5 and ra + rb >= extra:
+                take_a = min(ra, extra - 0.5)
+                take_b = extra - take_a
+            else:
+                continue
+            if shots[last][1] - take_a < 1.0 or shots[first][1] - take_b < 1.0:
+                continue
+            if take_a:
+                shots[last][1] -= take_a
+                shots.insert(last + 1, [shots[after[0]][0], take_a, shots[last][2],
+                                        {x: v for x, v in shots[last][3].items() if x not in ("caption", "intro")}])
+                after[2] += take_a
+            if take_b:
+                start = sum(x[1] for x in shots[:first])
+                piece = [shots[before[1]][0], take_b, shots[first][2],
+                         {x: v for x, v in shots[first][3].items() if x not in ("caption", "intro")}]
+                cap = shots[first][3].get("caption")
+                if cap and cap.get("_t", start + take_b) < start + take_b:  # its word is now under the borrowed piece
+                    piece[3]["caption"] = shots[first][3].pop("caption")
+                shots[first][1] -= take_b
+                shots.insert(first, piece)
+                before[2] += take_b
     return shots
 
 

@@ -648,6 +648,18 @@ class Checks(unittest.TestCase):
                                       [Path("c.jpg"), 4.0, 0.0, {}], [Path("c.jpg"), 3.0, 0.0, {}]])
         self.assertEqual([(s[0].stem, s[1]) for s in tight], [("a", 6.0), ("b", 4.0), ("b", 3.5), ("c", 0.5), ("c", 4.0), ("c", 3.0)],
                          "only the half second too many goes to the next picture")
+        both = make.break_long_runs([[Path("a.jpg"), 3.12, 0.0, {}], [Path("a.jpg"), 3.13, 0.0, {}],
+                                     [Path("b.jpg"), 3.85, 0.0, {"caption": {"title": "x", "_t": 6.4}}],
+                                     [Path("b.jpg"), 4.89, 0.0, {}], [Path("c.jpg"), 2.82, 0.0, {}], [Path("c.jpg"), 4.01, 0.0, {}]])
+        self.assertLessEqual(qa.longest_same(both), make.TAKE_MAX, "day 11: the next picture had no room, the one before had")
+        self.assertEqual([(s[0].stem, round(s[1], 2)) for s in both],
+                         [("a", 3.12), ("a", 3.13), ("a", 1.24), ("b", 2.61), ("b", 4.89), ("c", 2.82), ("c", 4.01)])
+        self.assertTrue(all(s[1] >= 0.5 for s in both), "no flash of a picture")
+        self.assertIn("caption", both[2][3], "the caption whose word is now under the borrowed piece goes with it")
+        split = make.break_long_runs([[Path("a.jpg"), 7.2, 0.0, {}], [Path("b.jpg"), 4.5, 0.0, {}], [Path("b.jpg"), 4.5, 0.0, {}],
+                                      [Path("c.jpg"), 7.0, 0.0, {}]])
+        self.assertEqual([(s[0].stem, round(s[1], 2)) for s in split],
+                         [("a", 7.2), ("a", 0.6), ("b", 3.9), ("b", 3.6), ("c", 0.9), ("c", 7.0)], "neither alone: both take a part")
         card = make.break_long_runs(pic("a", 3) + [[Path("card_1.json"), 3.0, 0.0]])
         self.assertEqual([s[0].stem for s in card], ["a", "a", "a", "card_1"], "a card is never borrowed")
 
@@ -1114,7 +1126,8 @@ class Chromium(unittest.TestCase):
         def sh(cmd, **kw):
             runs.append(" ".join(map(str, cmd[1:])))
             return types.SimpleNamespace(returncode=1 if "--with-deps" in cmd else 0)
-        with mock.patch.object(k, "sh", sh), mock.patch.object(k.time, "sleep") as slept:
+        with mock.patch.object(k, "sh", sh), mock.patch.object(k.time, "sleep") as slept, \
+                mock.patch.object(k, "Path", side_effect=lambda p: Path(tempfile.mkdtemp()) if p == "/etc/apt/sources.list.d" else Path(p)):
             k.chromium()
         self.assertEqual(runs, ["-m playwright install --with-deps chromium"] * 3 + ["-m playwright install chromium"])
         self.assertEqual([c.args[0] for c in slept.call_args_list], [0, 20, 60])
@@ -1123,3 +1136,14 @@ class Chromium(unittest.TestCase):
                 mock.patch.object(k.time, "sleep"):
             k.chromium()
         self.assertEqual(len(runs), 1, "once it installs, nothing more")
+
+    def test_the_r_repositories_are_switched_off_so_their_mirror_sync_cannot_stop_apt(self):
+        k = kernel({"stage": "part", "nonce": "n", "id": "d12", "title": "Day 12", "slug": "d12", "day": 12})
+        lists = Path(tempfile.mkdtemp())
+        (lists / "cran.list").write_text("deb https://cloud.r-project.org/bin/linux/ubuntu noble-cran40/\n")
+        (lists / "r2u.list").write_text("deb [arch=amd64] https://r2u.stat.illinois.edu/ubuntu noble main\n")
+        (lists / "deadsnakes.list").write_text("deb https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu noble main\n")
+        with mock.patch.object(k, "sh", lambda cmd, **kw: types.SimpleNamespace(returncode=0)), \
+                mock.patch.object(k, "Path", side_effect=lambda p: lists if p == "/etc/apt/sources.list.d" else Path(p)):
+            k.chromium()
+        self.assertEqual(sorted(f.name for f in lists.iterdir()), ["cran.list.off", "deadsnakes.list", "r2u.list.off"])

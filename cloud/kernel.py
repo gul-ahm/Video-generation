@@ -61,10 +61,17 @@ def unpack():
     (HOME / ".env").write_text("\n".join(lines) + "\n")
 
 
+APT_UNUSED = ("r-project.org", "r2u.stat")  # the Kaggle image's R package repositories: nothing here comes from them
+
+
 def chromium():
-    """Chrome and the system libraries it needs. The libraries come from apt, which on a fresh Kaggle machine now and
-    then fails (day 12: part 5 failed twice on it while parts 0 and 3 installed): three tries, then Chrome alone,
-    and the check that draws a card says whether the browser runs."""
+    """Chrome and the system libraries it needs. Playwright gets the libraries with apt, and apt stops when any
+    repository fails: on day 12 part 5 failed twice because Kaggle's R repository (cloud.r-project.org) was halfway
+    through a mirror sync. The R repositories are switched off first; then three tries, then Chrome alone (the
+    libraries are already on the image), and the check that draws a card says whether the browser runs."""
+    for f in Path("/etc/apt/sources.list.d").glob("*"):
+        if f.is_file() and not f.name.endswith(".off") and any(r in f.read_text(errors="ignore") for r in APT_UNUSED):
+            f.rename(f.with_name(f.name + ".off"))
     for wait in (0, 20, 60):
         time.sleep(wait)
         if sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"], check=False).returncode == 0:
