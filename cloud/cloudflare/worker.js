@@ -299,6 +299,7 @@ async function startJob(env, day, from = "research", extra = {}) {
   if (!["research", "gpu"].includes(from)) await put(env, unitKey(job, "gpu"), { state: "done", tries: 0 });
   await put(env, `job:${job.id}`, job);
   s.batch = { ids: [job.id], since: Date.now() };
+  s.retry = (s.retry || []).filter((x) => x !== day);  // started by hand: the next batch does not make it again
   const pushed = [];
   for (const key of keys) pushed.push([key, (await pushUnit(env, job, key)).state]);
   if (from === "research" && day) s.started[today(s)] = (s.started[today(s)] || 0) + 1;

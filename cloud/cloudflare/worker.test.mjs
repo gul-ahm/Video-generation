@@ -558,3 +558,11 @@ test("the researches started together each get a share of the AI Studio rate", a
   await w.tick();
   assert.deepEqual(w.pushes.filter((x) => x.stage === "research").map((r) => r.share), [0.33, 0.33, 0.33]);
 });
+
+test("a day started by hand leaves the retry list, so the next batch does not make it again", async () => {
+  const w = world();
+  const s = JSON.parse(w.kv.get("state") || "{}");
+  w.kv.set("state", JSON.stringify({ ...s, retry: [2, 3] }));
+  await w.call("/start", { day: 3, from: "parts", chapters: 6, done: [0, 1, 2, 3, 4] });
+  assert.deepEqual(JSON.parse(w.kv.get("state")).retry, [2]);
+});
