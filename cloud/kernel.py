@@ -61,6 +61,18 @@ def unpack():
     (HOME / ".env").write_text("\n".join(lines) + "\n")
 
 
+def chromium():
+    """Chrome and the system libraries it needs. The libraries come from apt, which on a fresh Kaggle machine now and
+    then fails (day 12: part 5 failed twice on it while parts 0 and 3 installed): three tries, then Chrome alone,
+    and the check that draws a card says whether the browser runs."""
+    for wait in (0, 20, 60):
+        time.sleep(wait)
+        if sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"], check=False).returncode == 0:
+            return
+    print("chromium: the system libraries did not install three times; Chrome alone, the card check decides", flush=True)
+    sh([sys.executable, "-m", "playwright", "install", "chromium"])
+
+
 def install(stage):
     if stage == "upload":  # Drive and YouTube only: nothing to install
         return
@@ -69,7 +81,7 @@ def install(stage):
     # this is the version the Mac runs
     sh(pip + ["-r", str(HOME / "requirements.txt"), "kaggle==2.2.5", "soundfile", "yt-dlp"])
     if stage == "research":
-        sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"])
+        chromium()
     if stage == "gpu":
         voice_model(pip)
     if stage == "check":
@@ -80,7 +92,7 @@ def install(stage):
             sh(f"mkdir -p {node} && curl -sL {NODE} | tar xJ --strip-components=1 -C {node}")
         # Chrome and every library it needs: the cards (titles, stats, labels) and the HyperFrames effects use it.
         # Missing, they were skipped one by one and the film came out with a tenth of its cards.
-        sh([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"])
+        chromium()
         sh([sys.executable, "fx.py", "setup"], cwd=HOME)
         # a card is drawn here once, so a broken browser stops the run now instead of making a film without cards
         sh([sys.executable, "-c", "import os, fx, hf; os.environ['STRICT'] = '1'; fx.ready(); p = hf.page(); "

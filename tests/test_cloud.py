@@ -1104,3 +1104,22 @@ class Thumbnail(unittest.TestCase):
             px = Image.open(Path(d) / "t0.jpg").convert("RGB").crop((100, 540, 1180, 620)).getcolors(1 << 20)
             self.assertTrue(any(r > 200 and g < 40 and b < 40 for _, (r, g, b) in px), "red band")
             self.assertTrue(any(r > 230 and g > 200 and b < 60 for _, (r, g, b) in px), "yellow words")
+
+
+class Chromium(unittest.TestCase):
+    def test_the_browser_libraries_are_tried_three_times_then_chrome_alone(self):
+        k = kernel({"stage": "part", "nonce": "n", "id": "d12", "title": "Day 12", "slug": "d12", "day": 12})
+        runs = []
+
+        def sh(cmd, **kw):
+            runs.append(" ".join(map(str, cmd[1:])))
+            return types.SimpleNamespace(returncode=1 if "--with-deps" in cmd else 0)
+        with mock.patch.object(k, "sh", sh), mock.patch.object(k.time, "sleep") as slept:
+            k.chromium()
+        self.assertEqual(runs, ["-m playwright install --with-deps chromium"] * 3 + ["-m playwright install chromium"])
+        self.assertEqual([c.args[0] for c in slept.call_args_list], [0, 20, 60])
+        runs.clear()
+        with mock.patch.object(k, "sh", lambda cmd, **kw: runs.append(cmd) or types.SimpleNamespace(returncode=0)), \
+                mock.patch.object(k.time, "sleep"):
+            k.chromium()
+        self.assertEqual(len(runs), 1, "once it installs, nothing more")
